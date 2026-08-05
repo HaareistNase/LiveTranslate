@@ -1,28 +1,24 @@
-LiveTranslate v18.7-dev – LiveLineTracker
+LiveTranslate v18.8-gui – Reiner GUI-Patch
 
-Zwischenstände derselben Whisper-Zeile werden nicht mehr an NLLB
-geschickt. Der jeweils aktuelle Stand ersetzt nur den vorherigen.
-
-Eine vollständige Zeile wird ausgegeben bei:
-- neuer Startzeit,
-- 1,8 Sekunden Inaktivität,
-- kontrolliertem Stopp,
-- maximal 12 Sekunden als Sicherheitsgrenze.
-
-Ziel:
-- keine Wortfragmente,
-- keine künstliche Trennung von Subjekt und Verb,
-- keine Zwischenstand-Dopplungen,
-- vollständige Satzblöcke für NLLB.
-
-Enthalten:
+Geändert werden nur:
+- main_gui.py
 - version.py
-- config.py
-- transcript_assembler.py
-- wlk_stream.py
-- tests/test_live_line_tracker.py
 
-Keine .gitignore, keine Modelle, keine virtuellen Umgebungen.
+Unverändert bleiben:
+- wlk_stream.py
+- transcript_assembler.py
+- context_buffer.py
+- Audio- und Übersetzungslogik
+
+Neu:
+- Nur das deutsche Übersetzungsfenster ist scrollbar.
+- Der Scrollbalken ist dort dauerhaft sichtbar.
+- Neue Übersetzungen scrollen automatisch vollständig nach unten.
+- Horizontales Scrollen ist deaktiviert.
+- Der deutsche Bereich erhält mehr Platz.
+- Text bleibt markier- und kopierbar.
+
+Diesen Patch über den sauberen v18.7-Stand kopieren.
 
 Fenstertitel:
-LiveTranslate v18.7-dev [develop]
+LiveTranslate v18.8-gui [develop]

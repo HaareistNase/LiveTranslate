@@ -6,6 +6,7 @@ from PySide6.QtCore import (
     QObject,
     Qt,
     Signal,
+    QTimer,
 )
 from PySide6.QtGui import (
     QCloseEvent,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QPlainTextEdit,
+    QTextBrowser,
     QProgressBar,
     QVBoxLayout,
     QWidget,
@@ -227,7 +229,7 @@ class LiveTranslateWindow(QMainWindow):
                 font-weight: 600;
             }
 
-            QLabel#SubtitleLabel,
+            QTextBrowser#SubtitleLabel,
             QLabel#SourceLabel {
                 background-color: #171717;
                 border: 1px solid #333333;
@@ -609,22 +611,31 @@ class LiveTranslateWindow(QMainWindow):
             german_heading
         )
 
-        self.subtitle_label = QLabel(
-            "Start drücken, um die "
-            "Live-Übersetzung zu beginnen."
-        )
+        self.subtitle_label = QTextBrowser()
 
         self.subtitle_label.setObjectName(
             "SubtitleLabel"
         )
 
-        self.subtitle_label.setWordWrap(
-            True
+        self.subtitle_label.setOpenExternalLinks(
+            False
         )
 
-        self.subtitle_label.setAlignment(
-            Qt.AlignLeft
-            | Qt.AlignTop
+        self.subtitle_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse
+        )
+
+        self.subtitle_label.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAlwaysOn
+        )
+
+        self.subtitle_label.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAlwaysOff
+        )
+
+        self.subtitle_label.setHtml(
+            "Start drücken, um die "
+            "Live-Übersetzung zu beginnen."
         )
 
         subtitle_font = QFont()
@@ -639,7 +650,7 @@ class LiveTranslateWindow(QMainWindow):
 
         outer_layout.addWidget(
             self.subtitle_label,
-            stretch=2
+            stretch=3
         )
 
         self.metrics_label = QLabel(
@@ -887,13 +898,48 @@ class LiveTranslateWindow(QMainWindow):
             f"{german_characters} Zeichen"
         )
 
+    @staticmethod
+    def scroll_translation_to_end(
+        widget: QTextBrowser
+    ) -> None:
+        def perform_scroll() -> None:
+            cursor = widget.textCursor()
+
+            cursor.movePosition(
+                cursor.MoveOperation.End
+            )
+
+            widget.setTextCursor(
+                cursor
+            )
+
+            widget.ensureCursorVisible()
+
+            scrollbar = (
+                widget.verticalScrollBar()
+            )
+
+            scrollbar.setValue(
+                scrollbar.maximum()
+            )
+
+        QTimer.singleShot(
+            0,
+            perform_scroll
+        )
+
     def render_history(
         self
     ) -> None:
         if not self.history:
-            self.subtitle_label.setText(
+            self.subtitle_label.setHtml(
                 "Warte auf übersetzten Text ..."
             )
+
+            self.scroll_translation_to_end(
+                self.subtitle_label
+            )
+
             return
 
         parts = []
@@ -929,8 +975,12 @@ class LiveTranslateWindow(QMainWindow):
                 "</div>"
             )
 
-        self.subtitle_label.setText(
+        self.subtitle_label.setHtml(
             "".join(parts)
+        )
+
+        self.scroll_translation_to_end(
+            self.subtitle_label
         )
 
     def add_subtitle(
