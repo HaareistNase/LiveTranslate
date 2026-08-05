@@ -1,0 +1,8 @@
+numpy==2.4.6
+requests
+soundcard
+websockets
+PySide6
+transformers
+sentencepiece
+huggingface-hub

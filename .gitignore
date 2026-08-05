@@ -1,0 +1,13 @@
+venv/
+venv_wlk/
+models/
+nllb-200-distilled-1.3B-ctranslate2/
+Downloads/
+__pycache__/
+*.pyc
+*.zip
+build/
+dist/
+*.log
+.gitattributes_alt
+.gitignore_alt
