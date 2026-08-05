@@ -43,6 +43,7 @@ from nllb_translator import NLLBTranslator
 from context_buffer import ContextBuffer
 from transcript_assembler import TranscriptAssembler
 from pipeline_logger import PipelineLogger
+from segment_probe import SegmentProbe
 
 
 class WLKStream:
@@ -78,6 +79,8 @@ class WLKStream:
                 self.bridge.server_log_ready.emit
             )
         )
+
+        self.segment_probe = SegmentProbe()
 
         self.context_buffer = ContextBuffer(
             logger=self.pipeline_logger
@@ -945,12 +948,21 @@ class WLKStream:
                     []
                 )
 
+            self.segment_probe.record_packet(
+                data,
+                items
+            )
+
             self.pipeline_logger.log(
                 "RAW_ITEMS",
                 items
             )
 
             for item in items:
+                self.segment_probe.record_item(
+                    item
+                )
+
                 self.update_language(
                     data,
                     item
@@ -959,6 +971,11 @@ class WLKStream:
                 new_text = (
                     self.transcript_assembler
                     .add_item(item)
+                )
+
+                self.segment_probe.record_output(
+                    item,
+                    new_text
                 )
 
                 if not new_text:
@@ -1139,6 +1156,8 @@ class WLKStream:
         self.main_thread.start()
 
     def stop(self) -> None:
+        self.segment_probe.record_stop()
+
         self.bridge.status_ready.emit(
             "Audioaufnahme wird beendet …"
         )

@@ -1,28 +1,20 @@
-LiveTranslate v18.9-asr – Reines ASR-Feintuning
+LiveTranslate v18.9-probe – Reiner Diagnosepatch
 
-Geändert werden ausschließlich:
-- config.py
+Verändert keine ASR-, Audio-, Übersetzungs- oder GUI-Logik.
+
+Enthalten:
 - version.py
-
-Unverändert bleiben:
-- main_gui.py
 - wlk_stream.py
-- transcript_assembler.py
-- context_buffer.py
-- Audio- und Übersetzungslogik
+- segment_probe.py
 
-Änderungen:
-- ASR_LINE_STALE_SECONDS: 1.8 -> 2.4 Sekunden
-- ASR_LINE_MAX_SECONDS: 12.0 -> 15.0 Sekunden
+Pro Sitzung entsteht:
+logs\segment_probe\segment_probe_YYYYMMDD_HHMMSS.jsonl
 
-Ziel:
-Kurze Sprechpausen sollen eine laufende Whisper-Zeile nicht zu früh
-abschließen. Dadurch erhält NLLB häufiger vollständigere Satzteile.
-
-Erwartete Nebenwirkung:
-Neue Übersetzungen können etwa 0,6 Sekunden später erscheinen.
-
-Diesen Patch über den funktionierenden Stand v18.8-gui kopieren.
+Test:
+1. Über den funktionierenden Stand v18.8-gui kopieren.
+2. Referenzvideo 60–90 Sekunden abspielen.
+3. Stopp drücken.
+4. Neueste JSONL-Datei hier hochladen.
 
 Fenstertitel:
-LiveTranslate v18.9-asr [develop]
+LiveTranslate v18.9-probe [develop]
