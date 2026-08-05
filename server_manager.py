@@ -11,8 +11,13 @@ from config import (
     SERVER_START_TIMEOUT_SECONDS,
     SERVER_STOP_TIMEOUT_SECONDS,
     TORCH_DLL_PATH,
+    WLK_AUDIO_MAX_LEN,
     WLK_BACKEND,
+    WLK_BUFFER_TRIMMING,
+    WLK_BUFFER_TRIMMING_SEC,
     WLK_HEALTH_URL,
+    WLK_LOG_LEVEL,
+    WLK_MAX_CONTEXT_TOKENS,
     WLK_MODEL,
     WLK_POLICY,
 )
@@ -108,6 +113,14 @@ class WhisperLiveKitServer:
             self.find_wlk_executable()
         )
 
+        # Die GUI-Auswahl wird direkt an den WLK-Server
+        # weitergegeben. Nur bei "Automatisch" bleibt es bei auto.
+        server_language = (
+            language
+            if language
+            else "auto"
+        )
+
         return [
             str(wlk_executable),
             "--backend",
@@ -117,8 +130,18 @@ class WhisperLiveKitServer:
             "--model",
             WLK_MODEL,
             "--language",
-            language,
+            server_language,
+            "--audio-max-len",
+            str(WLK_AUDIO_MAX_LEN),
+            "--buffer_trimming",
+            WLK_BUFFER_TRIMMING,
+            "--buffer_trimming_sec",
+            str(WLK_BUFFER_TRIMMING_SEC),
+            "--max-context-tokens",
+            str(WLK_MAX_CONTEXT_TOKENS),
             "--pcm-input",
+            "--log-level",
+            WLK_LOG_LEVEL,
         ]
 
     def read_output(
@@ -148,7 +171,15 @@ class WhisperLiveKitServer:
     ) -> None:
         if self.is_healthy():
             self.status(
-                "WhisperLiveKit läuft bereits"
+                "WhisperLiveKit läuft bereits · "
+                "vorhandene Serverparameter werden verwendet"
+            )
+
+            self.log(
+                "HINWEIS: Ein externer WLK-Server läuft bereits "
+                "auf Port 8000. Die integrierten Parameter und die "
+                "gewählte GUI-Sprache können für diesen Prozess "
+                "nicht geändert werden."
             )
 
             self.started_by_us = False

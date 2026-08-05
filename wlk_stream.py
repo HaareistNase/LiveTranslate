@@ -44,6 +44,7 @@ from context_buffer import ContextBuffer
 from transcript_assembler import TranscriptAssembler
 from pipeline_logger import PipelineLogger
 from pipeline_probe import PipelineProbe
+from raw_websocket_probe import RawWebSocketProbe
 
 
 class WLKStream:
@@ -81,6 +82,7 @@ class WLKStream:
         )
 
         self.pipeline_probe = PipelineProbe()
+        self.raw_websocket_probe = RawWebSocketProbe()
 
         self.context_buffer = ContextBuffer(
             logger=self.pipeline_logger
@@ -936,6 +938,12 @@ class WLKStream:
                 message
             )
 
+            # Vollständiger unveränderter Mitschnitt direkt nach
+            # json.loads(), noch vor jeder Interpretation.
+            self.raw_websocket_probe.record(
+                data
+            )
+
             self.pipeline_logger.log(
                 "RAW_WEBSOCKET",
                 data
@@ -1307,6 +1315,7 @@ class WLKStream:
         self.stop_event.set()
 
         self.pipeline_probe.finish()
+        self.raw_websocket_probe.finish()
 
         self.bridge.status_ready.emit(
             "Verarbeitung abgeschlossen"

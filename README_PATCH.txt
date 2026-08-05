@@ -1,42 +1,52 @@
-LiveTranslate v18.11-pipeline-probe
+LiveTranslate v18.14-stable – Bewährte Serverparameter
 
-Reiner Diagnosepatch. Es werden keine ASR-, Tracker-, Kontext-,
-Übersetzungs- oder GUI-Entscheidungen verändert.
+Dieser Patch übernimmt den erfolgreichen Referenzlauf als integrierten
+Standard.
 
-Enthalten:
-- version.py
-- wlk_stream.py
-- pipeline_probe.py
+Serverkonfiguration:
 
-Nicht enthalten und unverändert:
-- transcript_assembler.py
-- main_gui.py
-- context_buffer.py
+- Backend: faster-whisper
+- Policy: simulstreaming
+- Modell: large-v3
+- Sprache: Auswahl aus der GUI; bei Automatisch = auto
+- audio-max-len: 45 Sekunden
+- buffer_trimming: segment
+- buffer_trimming_sec: 15 Sekunden
+- max-context-tokens: 0
+- PCM-Eingang
+- Log-Level INFO
+
+Geändert:
+
 - config.py
-- nllb_translator.py
+- server_manager.py
+- version.py
 
-Pro Sitzung entstehen:
+Zusätzlich:
 
-logs\pipeline_probe\pipeline_probe_YYYYMMDD_HHMMSS.jsonl
-logs\pipeline_probe\pipeline_summary_YYYYMMDD_HHMMSS.json
+- stop_external_wlk.bat
 
-Protokollierte Übergänge:
+Unverändert bleiben:
 
-1. websocket_packet
-2. raw_item
-3. tracker_output
-4. context_input
-5. context_output
-6. translation_queue
-7. nllb_input
-8. nllb_output
-9. gui_output
+- main_gui.py
+- wlk_stream.py
+- transcript_assembler.py
+- context_buffer.py
+- NLLB
+- Diagnose-Probes
 
-Test:
-1. Über den aktuellen v18.10-prefix-Stand kopieren.
-2. Referenzvideo 60 bis 90 Sekunden abspielen.
-3. Stopp drücken und Offline-Auswertung abwarten.
-4. Neueste pipeline_probe_*.jsonl und pipeline_summary_*.json hochladen.
+Wichtig vor dem ersten Test:
+
+Ein manuell gestarteter WLK-Server auf Port 8000 verwendet weiterhin
+seine alten Startparameter. Deshalb alle WLK-Fenster schließen oder
+stop_external_wlk.bat ausführen.
+
+Danach nur noch die GUI starten. Sie startet WhisperLiveKit selbst mit
+der neuen Standardkonfiguration.
+
+Für das russische Referenzvideo in der GUI ausdrücklich "Russisch"
+wählen. Das war Bestandteil des erfolgreichen Laufs.
 
 Fenstertitel:
-LiveTranslate v18.11-pipeline-probe [develop]
+
+LiveTranslate v18.14-stable [develop]

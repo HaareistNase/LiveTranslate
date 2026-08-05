@@ -1,5 +1,5 @@
 APP_NAME = "LiveTranslate"
-VERSION = "18.11-pipeline-probe"
+VERSION = "18.14-stable"
 BRANCH = "develop"
 BUILD_DATE = "2026-08-05"
 

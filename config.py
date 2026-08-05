@@ -70,6 +70,15 @@ WLK_LANGUAGE = "auto"
 WLK_BACKEND = "faster-whisper"
 WLK_POLICY = "simulstreaming"
 
+
+# Bewährte WhisperLiveKit-Serverkonfiguration
+# Referenzlauf: 97 % Wort- und 92 % Zeichenabdeckung.
+WLK_AUDIO_MAX_LEN = 45
+WLK_BUFFER_TRIMMING = "segment"
+WLK_BUFFER_TRIMMING_SEC = 15
+WLK_MAX_CONTEXT_TOKENS = 0
+WLK_LOG_LEVEL = "INFO"
+
 # CUDA-DLL-Ordner aus der bestehenden funktionierenden Umgebung
 TORCH_DLL_PATH = (
     r"E:\KI\LiveTranslate\venv\Lib\site-packages\torch\lib"
@@ -158,5 +167,5 @@ PENDING_LANGUAGE_SEGMENTS_MAX = 32
 
 
 # LiveLineTracker
-ASR_LINE_STALE_SECONDS = 2.4
-ASR_LINE_MAX_SECONDS = 15.0
+ASR_LINE_STALE_SECONDS = 1.8
+ASR_LINE_MAX_SECONDS = 12.0
