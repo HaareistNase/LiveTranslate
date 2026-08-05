@@ -60,6 +60,7 @@ class GuiBridge(QObject):
 
     status_ready = Signal(str)
     error_ready = Signal(str)
+    warning_ready = Signal(str)
 
     audio_level_ready = Signal(float)
     server_log_ready = Signal(str)
@@ -718,6 +719,10 @@ class LiveTranslateWindow(QMainWindow):
             self.show_error
         )
 
+        self.bridge.warning_ready.connect(
+            self.show_warning
+        )
+
         self.bridge.audio_level_ready.connect(
             self.set_audio_level
         )
@@ -991,6 +996,19 @@ class LiveTranslateWindow(QMainWindow):
                 text
             )
         )
+
+    def show_warning(
+        self,
+        text: str
+    ) -> None:
+        self.status_label.setText(
+            text
+        )
+
+        if self.debug_mode:
+            self.append_log(
+                f"WARNUNG: {text}"
+            )
 
     def show_error(
         self,

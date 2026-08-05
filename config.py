@@ -134,3 +134,24 @@ REFERENCE_COMPUTE_TYPE = "float16"
 
 
 WLK_DRAIN_TIMEOUT_SECONDS = 30.0
+
+
+# Robustheit: Audio
+AUDIO_GAIN_ENABLED = True
+AUDIO_GAIN_TARGET_RMS = 0.035
+AUDIO_GAIN_MAX = 12.0
+AUDIO_GAIN_MIN_INPUT_RMS = 0.00008
+AUDIO_GAIN_SMOOTHING = 0.20
+AUDIO_CLIP_LIMIT = 0.98
+
+# Ein RMS-Ausschlag oberhalb dieser Grenze gilt sicher als Systemton.
+AUDIO_SIGNAL_PRESENT_RMS = 0.00012
+
+# Robustheit: ASR / WebSocket
+WLK_CONNECT_RETRIES = 8
+WLK_CONNECT_RETRY_SECONDS = 1.0
+WLK_ASR_WATCHDOG_SECONDS = 12.0
+
+# Solange die automatische Sprache noch nicht sicher erkannt ist,
+# werden übersetzbare Kontextblöcke nicht verworfen.
+PENDING_LANGUAGE_SEGMENTS_MAX = 32

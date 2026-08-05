@@ -7,6 +7,7 @@ import warnings
 import wave
 from datetime import datetime
 from pathlib import Path
+from collections import deque
 
 import numpy as np
 import requests
@@ -14,6 +15,13 @@ import websockets
 
 from config import (
     AUDIO_ACTIVE_RMS_THRESHOLD,
+    AUDIO_CLIP_LIMIT,
+    AUDIO_GAIN_ENABLED,
+    AUDIO_GAIN_MAX,
+    AUDIO_GAIN_MIN_INPUT_RMS,
+    AUDIO_GAIN_SMOOTHING,
+    AUDIO_GAIN_TARGET_RMS,
+    AUDIO_SIGNAL_PRESENT_RMS,
     AUDIO_LEVEL_STATUS_INTERVAL,
     AUDIO_SILENCE_WARNING_SECONDS,
     CHUNK_SECONDS,
@@ -21,6 +29,10 @@ from config import (
     SAMPLE_RATE,
     TRANSLATION_BATCH_SIZE,
     TRANSLATION_BATCH_WAIT_SECONDS,
+    PENDING_LANGUAGE_SEGMENTS_MAX,
+    WLK_ASR_WATCHDOG_SECONDS,
+    WLK_CONNECT_RETRIES,
+    WLK_CONNECT_RETRY_SECONDS,
     WHISPER_TO_NLLB,
     WLK_HEALTH_URL,
     WLK_DRAIN_TIMEOUT_SECONDS,
@@ -102,6 +114,20 @@ class WLKStream:
         self.german_block_count = 0
         self.german_character_count = 0
 
+        # Audio-Gain und Erkennungs-Watchdog
+        self.smoothed_gain = 1.0
+        self.last_audio_signal_time = 0.0
+        self.last_asr_text_time = 0.0
+        self.audio_signal_seen = False
+
+        # Text darf während verspäteter/unklarer Spracherkennung
+        # nicht verloren gehen.
+        self.pending_language_segments = deque(
+            maxlen=PENDING_LANGUAGE_SEGMENTS_MAX
+        )
+
+        self.last_unknown_language = ""
+
     def emit_metrics(self) -> None:
         self.bridge.metrics_ready.emit(
             self.asr_update_count,
@@ -111,6 +137,159 @@ class WLKStream:
             self.german_block_count,
             self.german_character_count
         )
+
+    def apply_adaptive_gain(
+        self,
+        audio: np.ndarray,
+        rms: float
+    ) -> np.ndarray:
+        if (
+            not AUDIO_GAIN_ENABLED
+            or rms < AUDIO_GAIN_MIN_INPUT_RMS
+        ):
+            return audio
+
+        desired_gain = min(
+            AUDIO_GAIN_MAX,
+            max(
+                1.0,
+                AUDIO_GAIN_TARGET_RMS / max(
+                    rms,
+                    1e-9
+                )
+            )
+        )
+
+        self.smoothed_gain = (
+            (1.0 - AUDIO_GAIN_SMOOTHING)
+            * self.smoothed_gain
+            + AUDIO_GAIN_SMOOTHING
+            * desired_gain
+        )
+
+        return np.clip(
+            audio * self.smoothed_gain,
+            -AUDIO_CLIP_LIMIT,
+            AUDIO_CLIP_LIMIT
+        ).astype(np.float32)
+
+    @staticmethod
+    def normalize_language_code(
+        language
+    ) -> str:
+        value = normalize_text(
+            language
+        ).lower().replace(
+            "_",
+            "-"
+        )
+
+        aliases = {
+            "rus": "ru",
+            "russian": "ru",
+            "eng": "en",
+            "english": "en",
+            "fra": "fr",
+            "fre": "fr",
+            "french": "fr",
+            "spa": "es",
+            "spanish": "es",
+            "ukr": "uk",
+            "ukrainian": "uk",
+            "tha": "th",
+            "thai": "th",
+            "vie": "vi",
+            "vietnamese": "vi",
+            "zho": "zh",
+            "chi": "zh",
+            "zh-cn": "zh",
+            "zh-tw": "zh",
+            "chinese": "zh",
+            "kor": "ko",
+            "korean": "ko",
+            "jpn": "ja",
+            "japanese": "ja",
+        }
+
+        return aliases.get(
+            value,
+            value.split("-", 1)[0]
+        )
+
+    def flush_pending_language_segments(
+        self
+    ) -> None:
+        if (
+            not self.current_language
+            or self.current_language
+            not in WHISPER_TO_NLLB
+        ):
+            return
+
+        while self.pending_language_segments:
+            segment = (
+                self.pending_language_segments
+                .popleft()
+            )
+
+            self._enqueue_segment_with_language(
+                segment,
+                self.current_language
+            )
+
+    def _enqueue_segment_with_language(
+        self,
+        segment: str,
+        language: str
+    ) -> None:
+        try:
+            self.translation_queue.put(
+                (
+                    segment,
+                    language
+                ),
+                timeout=1.0
+            )
+
+            self.nllb_block_count += 1
+            self.nllb_character_count += len(
+                segment
+            )
+
+            self.bridge.source_ready.emit(
+                segment
+            )
+
+            self.emit_metrics()
+
+        except queue.Full:
+            # Nicht blockieren: ältesten Eintrag verwerfen und den
+            # aktuellen noch einmal versuchen.
+            try:
+                old_item = (
+                    self.translation_queue
+                    .get_nowait()
+                )
+
+                if old_item is not None:
+                    self.translation_queue.task_done()
+
+            except queue.Empty:
+                pass
+
+            try:
+                self.translation_queue.put_nowait(
+                    (
+                        segment,
+                        language
+                    )
+                )
+
+            except queue.Full:
+                self.bridge.error_ready.emit(
+                    "Übersetzungs-Warteschlange "
+                    "bleibt voll; Abschnitt verworfen."
+                )
 
     def check_server(self) -> None:
         response = requests.get(
@@ -275,10 +454,17 @@ class WLKStream:
 
                         if (
                             rms
-                            >= AUDIO_ACTIVE_RMS_THRESHOLD
+                            >= AUDIO_SIGNAL_PRESENT_RMS
                         ):
                             active_audio_seen = True
+                            self.audio_signal_seen = True
                             last_active_time = now
+                            self.last_audio_signal_time = now
+
+                        audio = self.apply_adaptive_gain(
+                            audio,
+                            rms
+                        )
 
                         if (
                             now - last_status_time
@@ -293,7 +479,17 @@ class WLKStream:
                                 >= AUDIO_SILENCE_WARNING_SECONDS
                             ):
                                 self.bridge.status_ready.emit(
-                                    "Kein Systemton erkannt"
+                                    "Kein verwertbarer Systemton"
+                                )
+
+                            elif (
+                                self.last_asr_text_time > 0
+                                and now - self.last_asr_text_time
+                                >= WLK_ASR_WATCHDOG_SECONDS
+                            ):
+                                self.bridge.status_ready.emit(
+                                    "Systemton vorhanden · "
+                                    "warte auf Spracherkennung …"
                                 )
 
                             last_status_time = now
@@ -520,13 +716,6 @@ class WLKStream:
         self,
         segments: list[str]
     ) -> None:
-        if (
-            not self.current_language
-            or self.current_language
-            not in WHISPER_TO_NLLB
-        ):
-            return
-
         for segment in segments:
             segment = segment.strip()
 
@@ -541,79 +730,102 @@ class WLKStream:
                 }
             )
 
-            try:
-                self.translation_queue.put(
-                    (
-                        segment,
-                        self.current_language
-                    ),
-                    timeout=1.0
-                )
-
-                self.nllb_block_count += 1
-                self.nllb_character_count += len(
+            if (
+                not self.current_language
+                or self.current_language
+                not in WHISPER_TO_NLLB
+            ):
+                self.pending_language_segments.append(
                     segment
                 )
 
-                self.bridge.source_ready.emit(
-                    segment
+                self.bridge.status_ready.emit(
+                    "Text erkannt · "
+                    "Sprache wird noch zugeordnet …"
                 )
 
-                self.emit_metrics()
+                continue
 
-            except queue.Full:
-                self.bridge.error_ready.emit(
-                    "Übersetzungs-Warteschlange voll"
-                )
+            self._enqueue_segment_with_language(
+                segment,
+                self.current_language
+            )
 
     def update_language(
         self,
         data: dict,
         item: dict | None = None
     ) -> None:
+        if self.source_language != "auto":
+            self.current_language = (
+                self.source_language
+            )
+
+            self.flush_pending_language_segments()
+            return
+
         candidates = []
 
         if item:
             candidates.extend(
                 [
-                    item.get(
-                        "detected_language"
-                    ),
-                    item.get(
-                        "language"
-                    ),
-                    item.get(
-                        "lang"
-                    ),
+                    item.get("detected_language"),
+                    item.get("language"),
+                    item.get("lang"),
                 ]
             )
 
         candidates.extend(
             [
-                data.get(
-                    "detected_language"
-                ),
-                data.get(
-                    "language"
-                ),
-                data.get(
-                    "lang"
-                ),
+                data.get("detected_language"),
+                data.get("language"),
+                data.get("lang"),
             ]
         )
 
-        if self.source_language != "auto":
-            self.current_language = self.source_language
-            return
-
         for candidate in candidates:
-            language = normalize_text(
+            if candidate is None:
+                continue
+
+            language = self.normalize_language_code(
                 candidate
-            ).lower()
+            )
+
+            if not language:
+                continue
 
             if language in WHISPER_TO_NLLB:
+                changed = (
+                    language
+                    != self.current_language
+                )
+
                 self.current_language = language
+                self.last_unknown_language = ""
+
+                if changed:
+                    name = LANGUAGE_NAMES.get(
+                        language,
+                        language
+                    )
+
+                    self.bridge.status_ready.emit(
+                        f"Sprache erkannt: {name}"
+                    )
+
+                self.flush_pending_language_segments()
                 return
+
+            # Unbekannte oder nicht unterstützte Sprache niemals als
+            # aktuellen Übersetzungscode setzen.
+            if language != self.last_unknown_language:
+                self.last_unknown_language = language
+
+                self.bridge.status_ready.emit(
+                    f"Sprache '{language}' erkannt, "
+                    "aber nicht konfiguriert · "
+                    "Erkennung läuft weiter"
+                )
 
     async def send_audio(
         self,
@@ -756,6 +968,10 @@ class WLKStream:
                     )
                     continue
 
+                self.last_asr_text_time = (
+                    time.monotonic()
+                )
+
                 self.asr_update_count += 1
                 self.asr_character_count += len(
                     new_text
@@ -827,15 +1043,55 @@ class WLKStream:
                     receiver.cancel()
 
     def stream_worker(self) -> None:
-        try:
-            asyncio.run(
-                self.run_async()
-            )
+        last_error = None
 
-        except Exception as error:
-            if not self.stop_event.is_set():
+        try:
+            for attempt in range(
+                1,
+                WLK_CONNECT_RETRIES + 1
+            ):
+                if (
+                    self.stop_event.is_set()
+                    or self.audio_stop_event.is_set()
+                ):
+                    break
+
+                try:
+                    if attempt > 1:
+                        self.bridge.status_ready.emit(
+                            "Whisper-Verbindung wird "
+                            f"neu aufgebaut ({attempt}/"
+                            f"{WLK_CONNECT_RETRIES}) …"
+                        )
+
+                    asyncio.run(
+                        self.run_async()
+                    )
+
+                    last_error = None
+                    break
+
+                except Exception as error:
+                    last_error = error
+
+                    if (
+                        self.stop_event.is_set()
+                        or self.audio_stop_event.is_set()
+                    ):
+                        break
+
+                    time.sleep(
+                        WLK_CONNECT_RETRY_SECONDS
+                    )
+
+            if (
+                last_error is not None
+                and not self.stop_event.is_set()
+                and not self.audio_stop_event.is_set()
+            ):
                 self.bridge.error_ready.emit(
-                    f"WhisperLiveKit: {error}"
+                    "WhisperLiveKit-Verbindung "
+                    f"fehlgeschlagen: {last_error}"
                 )
 
         finally:
@@ -855,6 +1111,10 @@ class WLKStream:
 
     def start(self) -> None:
         self.check_server()
+
+        now = time.monotonic()
+        self.last_audio_signal_time = now
+        self.last_asr_text_time = now
 
         self.audio_thread = threading.Thread(
             target=self.audio_worker,
