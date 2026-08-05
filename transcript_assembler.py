@@ -13,29 +13,24 @@ from hallucination_filter import (
 )
 
 
-@dataclass
-class LiveLine:
-    key: tuple[str, str]
-    text: str
-    created_at: float
-    updated_at: float
-    committed_text: str = ""
+def _word_key(word: str) -> str:
+    return word.casefold().strip()
 
 
-def _common_prefix_word_count(
-    previous: str,
-    current: str
+def _common_prefix_words(
+    left: list[str],
+    right: list[str]
 ) -> int:
-    previous_words = previous.split()
-    current_words = current.split()
-
     count = 0
 
-    for left, right in zip(
-        previous_words,
-        current_words
+    for left_word, right_word in zip(
+        left,
+        right
     ):
-        if left.casefold() != right.casefold():
+        if (
+            _word_key(left_word)
+            != _word_key(right_word)
+        ):
             break
 
         count += 1
@@ -43,13 +38,31 @@ def _common_prefix_word_count(
     return count
 
 
+@dataclass
+class TrackedLine:
+    key: tuple[str, str]
+    current_text: str
+    committed_text: str
+    created_at: float
+    updated_at: float
+    last_commit_at: float
+
+
 class TranscriptAssembler:
     """
-    Verwalter für wachsende WhisperLiveKit-Zeilen.
+    Präfix-basierter Tracker für sehr lange WhisperLiveKit-Zeilen.
 
-    Zwischenstände derselben Zeile ersetzen nur deren internen Stand.
-    An den ContextBuffer geht erst eine abgeschlossene vollständige
-    Zeile.
+    WhisperLiveKit kann dieselbe Startzeit über viele Sekunden oder
+    sogar länger als eine Minute weiterführen. Eine Zwischenfreigabe
+    darf die Zeile deshalb nicht löschen.
+
+    Für jede Zeile bleiben erhalten:
+
+    - current_text: neuester vollständiger Whisper-Stand
+    - committed_text: bereits an den ContextBuffer ausgegebener Stand
+
+    Bei einer weiteren Aktualisierung wird nur der Wort-Suffix hinter
+    dem gemeinsamen Präfix ausgegeben.
     """
 
     def __init__(
@@ -60,7 +73,7 @@ class TranscriptAssembler:
 
         self.lines: dict[
             tuple[str, str],
-            LiveLine
+            TrackedLine
         ] = {}
 
         self.active_key: (
@@ -102,56 +115,80 @@ class TranscriptAssembler:
         )
 
     @staticmethod
-    def _new_part(
+    def _suffix_after_committed(
         committed_text: str,
-        final_text: str
+        current_text: str
     ) -> str:
         committed_text = normalize_text(
             committed_text
         )
 
-        final_text = normalize_text(
-            final_text
+        current_text = normalize_text(
+            current_text
         )
 
-        if not final_text:
+        if not current_text:
             return ""
 
         if not committed_text:
-            return final_text
+            return current_text
 
-        if final_text == committed_text:
+        if current_text == committed_text:
             return ""
 
-        if final_text.startswith(
-            committed_text
-        ):
-            return final_text[
-                len(committed_text):
-            ].strip()
+        committed_words = (
+            committed_text.split()
+        )
 
-        prefix_words = (
-            _common_prefix_word_count(
-                committed_text,
-                final_text
+        current_words = (
+            current_text.split()
+        )
+
+        prefix_length = (
+            _common_prefix_words(
+                committed_words,
+                current_words
             )
         )
 
-        final_words = final_text.split()
-
-        if prefix_words:
+        # Normalfall: Der bereits ausgegebene Text ist weiterhin
+        # vollständig am Anfang der wachsenden Zeile enthalten.
+        if prefix_length == len(
+            committed_words
+        ):
             return " ".join(
-                final_words[
-                    prefix_words:
+                current_words[
+                    prefix_length:
                 ]
             ).strip()
 
+        # Whisper hat einen früheren Teil korrigiert. Bereits ausgegebene
+        # Wörter werden nicht erneut gesendet. Nur Wörter hinter dem
+        # bisherigen Präfixumfang dürfen neu erscheinen.
+        if (
+            prefix_length
+            >= max(
+                1,
+                len(committed_words) - 3
+            )
+            and len(current_words)
+            > len(committed_words)
+        ):
+            return " ".join(
+                current_words[
+                    len(committed_words):
+                ]
+            ).strip()
+
+        # Starke Rückkorrektur oder Neustart derselben Startzeit:
+        # nichts doppelt ausgeben. Der aktuelle Stand bleibt gespeichert
+        # und kann bei späterem Wachstum wieder sauber anschließen.
         return ""
 
     def _commit(
         self,
         key: tuple[str, str],
-        keep_line: bool
+        remove_line: bool
     ) -> str:
         line = self.lines.get(
             key
@@ -160,24 +197,39 @@ class TranscriptAssembler:
         if line is None:
             return ""
 
-        output = self._new_part(
-            line.committed_text,
-            line.text
+        output = (
+            self._suffix_after_committed(
+                line.committed_text,
+                line.current_text
+            )
         )
 
-        line.committed_text = line.text
+        # Entscheidend: Selbst nach einer Zwischenfreigabe bleibt der
+        # ausgegebene Präfix gespeichert.
+        line.committed_text = (
+            line.current_text
+        )
+
+        line.last_commit_at = (
+            time.monotonic()
+        )
 
         self._log(
-            "LIVELINE_COMMIT",
+            "PREFIX_TRACKER_COMMIT",
             {
                 "key": key,
-                "full_text": line.text,
+                "current_text": (
+                    line.current_text
+                ),
+                "committed_text": (
+                    line.committed_text
+                ),
                 "output": output,
-                "keep_line": keep_line,
+                "remove_line": remove_line,
             }
         )
 
-        if not keep_line:
+        if remove_line:
             self.lines.pop(
                 key,
                 None
@@ -199,7 +251,7 @@ class TranscriptAssembler:
         )
 
         self._log(
-            "LIVELINE_UPDATE",
+            "PREFIX_TRACKER_UPDATE",
             {
                 "speaker": item.get(
                     "speaker"
@@ -230,68 +282,77 @@ class TranscriptAssembler:
         if key is None:
             return text
 
-        output_parts = []
+        outputs = []
+        now = time.monotonic()
 
+        # Eine wirklich neue Startzeit schließt die vorherige Zeile ab.
+        # Nur dann wird deren Zustand entfernt.
         if (
             self.active_key is not None
             and key != self.active_key
         ):
             previous_output = self._commit(
                 self.active_key,
-                keep_line=False
+                remove_line=True
             )
 
             if previous_output:
-                output_parts.append(
+                outputs.append(
                     previous_output
                 )
-
-        now = time.monotonic()
 
         line = self.lines.get(
             key
         )
 
         if line is None:
-            line = LiveLine(
+            line = TrackedLine(
                 key=key,
-                text=text,
+                current_text=text,
+                committed_text="",
                 created_at=now,
-                updated_at=now
+                updated_at=now,
+                last_commit_at=now
             )
 
             self.lines[key] = line
 
         else:
-            line.text = text
+            line.current_text = text
             line.updated_at = now
 
         self.active_key = key
 
+        # Eine extrem lange WLK-Zeile wird regelmäßig teilweise
+        # freigegeben. Anders als früher bleibt die Zeile danach erhalten.
         if (
-            now - line.created_at
+            now - line.last_commit_at
             >= ASR_LINE_MAX_SECONDS
         ):
-            forced_output = self._commit(
+            periodic_output = self._commit(
                 key,
-                keep_line=True
+                remove_line=False
             )
 
-            line.created_at = now
-
-            if forced_output:
-                output_parts.append(
-                    forced_output
+            if periodic_output:
+                outputs.append(
+                    periodic_output
                 )
 
         return " ".join(
-            output_parts
+            part
+            for part in outputs
+            if part
         ).strip()
 
     def flush_stale(
         self,
         maximum_age_seconds: float | None = None
     ) -> str:
+        """
+        Gibt den aktuellen neuen Suffix nach einer Pause frei, behält
+        die Zeile aber samt committed_text für spätere Erweiterungen.
+        """
         if self.active_key is None:
             return ""
 
@@ -318,7 +379,7 @@ class TranscriptAssembler:
 
         return self._commit(
             self.active_key,
-            keep_line=False
+            remove_line=False
         )
 
     def flush_all(
@@ -331,7 +392,7 @@ class TranscriptAssembler:
         ):
             output = self._commit(
                 key,
-                keep_line=False
+                remove_line=True
             )
 
             if output:

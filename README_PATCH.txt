@@ -1,20 +1,49 @@
-LiveTranslate v18.9-probe – Reiner Diagnosepatch
+LiveTranslate v18.10-prefix – Präfix-basierter Tracker
 
-Verändert keine ASR-, Audio-, Übersetzungs- oder GUI-Logik.
+Dieser Patch verändert ausschließlich:
 
-Enthalten:
+- transcript_assembler.py
 - version.py
+- tests/test_prefix_tracker.py
+
+Unverändert bleiben:
+
+- main_gui.py
 - wlk_stream.py
-- segment_probe.py
+- context_buffer.py
+- config.py
+- Audio
+- ASR-Zeitwerte
+- Übersetzer
 
-Pro Sitzung entsteht:
-logs\segment_probe\segment_probe_YYYYMMDD_HHMMSS.jsonl
+Neue Logik:
 
-Test:
-1. Über den funktionierenden Stand v18.8-gui kopieren.
-2. Referenzvideo 60–90 Sekunden abspielen.
-3. Stopp drücken.
-4. Neueste JSONL-Datei hier hochladen.
+WhisperLiveKit kann dieselbe Startzeit sehr lange weiterführen.
+Nach einer Zwischenfreigabe wird die Zeile deshalb nicht mehr gelöscht.
+
+Der Tracker speichert dauerhaft:
+
+- den neuesten vollständigen Whisper-Text
+- den bereits an NLLB ausgegebenen Präfix
+
+Bei späterem Wachstum derselben Zeile wird nur der neue Wort-Suffix
+ausgegeben.
+
+Beispiel:
+
+1. Ausgabe:
+   "Сейчас мои дети спят"
+
+2. Neuer vollständiger WLK-Stand:
+   "Сейчас мои дети спят я пока записываю это видео"
+
+3. Neue Ausgabe:
+   "я пока записываю это видео"
+
+Der bereits ausgegebene Anfang erscheint niemals erneut.
+
+Diesen Patch über den funktionierenden Stand v18.8-gui kopieren.
 
 Fenstertitel:
-LiveTranslate v18.9-probe [develop]
+
+LiveTranslate v18.10-prefix [develop]
