@@ -25,6 +25,8 @@ from config import (
 from hallucination_filter import normalize_text
 from nllb_translator import NLLBTranslator
 from context_buffer import ContextBuffer
+from transcript_assembler import TranscriptAssembler
+from pipeline_logger import PipelineLogger
 
 
 class WLKStream:
@@ -40,7 +42,19 @@ class WLKStream:
             maxsize=64
         )
 
-        self.context_buffer = ContextBuffer()
+        self.pipeline_logger = PipelineLogger(
+            gui_callback=(
+                self.bridge.server_log_ready.emit
+            )
+        )
+
+        self.context_buffer = ContextBuffer(
+            logger=self.pipeline_logger
+        )
+
+        self.transcript_assembler = TranscriptAssembler(
+            logger=self.pipeline_logger
+        )
         self.source_language = source_language
         self.current_language = (
             source_language
@@ -340,10 +354,27 @@ class WLKStream:
                     f"{len(batch)} Abschnitt(e) ..."
                 )
 
+                self.pipeline_logger.log(
+                    "NLLB_INPUT_BATCH",
+                    [
+                        {
+                            "source_text": source_text,
+                            "language": language,
+                        }
+                        for source_text, language
+                        in batch
+                    ]
+                )
+
                 translations = (
                     self.translator.translate_batch(
                         batch
                     )
+                )
+
+                self.pipeline_logger.log(
+                    "NLLB_OUTPUT_BATCH",
+                    translations
                 )
 
                 for (
@@ -355,6 +386,11 @@ class WLKStream:
                 ):
                     if not german:
                         continue
+
+                    self.pipeline_logger.log(
+                        "GUI_SUBTITLE",
+                        german
+                    )
 
                     self.bridge.subtitle_ready.emit(
                         german
@@ -394,6 +430,14 @@ class WLKStream:
 
             if not segment:
                 continue
+
+            self.pipeline_logger.log(
+                "QUEUE_SEGMENT",
+                {
+                    "segment": segment,
+                    "language": self.current_language,
+                }
+            )
 
             try:
                 self.translation_queue.put(
@@ -502,6 +546,11 @@ class WLKStream:
                 message
             )
 
+            self.pipeline_logger.log(
+                "RAW_WEBSOCKET",
+                data
+            )
+
             if data.get("type") == "config":
                 self.update_language(
                     data
@@ -530,21 +579,32 @@ class WLKStream:
                     []
                 )
 
+            self.pipeline_logger.log(
+                "RAW_ITEMS",
+                items
+            )
+
             for item in items:
                 self.update_language(
                     data,
                     item
                 )
 
-                text = normalize_text(
-                    item.get(
-                        "text"
-                    )
+                new_text = (
+                    self.transcript_assembler
+                    .add_item(item)
                 )
+
+                if not new_text:
+                    self.pipeline_logger.log(
+                        "ASSEMBLER_SKIPPED",
+                        item.get("text")
+                    )
+                    continue
 
                 self.enqueue_segments(
                     self.context_buffer.add_confirmed(
-                        text
+                        new_text
                     )
                 )
 

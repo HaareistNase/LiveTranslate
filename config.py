@@ -105,3 +105,22 @@ SHOW_SERVER_LOG_DEFAULT = False
 CONTEXT_MAX_SENTENCES = 3
 CONTEXT_MAX_CHARACTERS = 420
 CONTEXT_FLUSH_SECONDS = 2.5
+
+
+# Verbesserte Transkript-Zusammenführung
+ASR_OVERLAP_MAX_WORDS = 80
+ASR_FUZZY_WORD_SIMILARITY = 0.86
+ASR_DUPLICATE_SIMILARITY = 0.94
+ASR_RECENT_LINE_CACHE = 80
+ASR_MIN_TEXT_CHARACTERS = 2
+
+
+# Pipeline-Diagnose
+PIPELINE_DEBUG_ENABLED = False
+PIPELINE_DEBUG_FILE = "logs/pipeline_debug.log"
+PIPELINE_DEBUG_GUI_TEXT_LIMIT = 320
+
+
+# Ein Kontextblock wird auch bei durchgehender Sprache spätestens
+# nach dieser Zeit ausgegeben.
+CONTEXT_MAX_WAIT_SECONDS = 6.0

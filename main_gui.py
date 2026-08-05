@@ -35,6 +35,11 @@ from config import (
 )
 from server_manager import WhisperLiveKitServer
 from wlk_stream import WLKStream
+from version import (
+    BRANCH,
+    VERSION,
+    display_version,
+)
 
 
 class GuiBridge(QObject):
@@ -178,7 +183,7 @@ class LiveTranslateWindow(QMainWindow):
         )
 
         self.setWindowTitle(
-            "LiveTranslate"
+            f"{display_version()} [{BRANCH}]"
         )
 
         self.resize(
@@ -296,7 +301,7 @@ class LiveTranslateWindow(QMainWindow):
         top_row = QHBoxLayout()
 
         title_label = QLabel(
-            "LiveTranslate"
+            display_version()
         )
 
         title_label.setObjectName(
@@ -529,7 +534,7 @@ class LiveTranslateWindow(QMainWindow):
         )
 
         self.status_label = QLabel(
-            "Bereit"
+            f"v{VERSION} · {BRANCH} · Bereit"
         )
 
         self.status_label.setObjectName(
@@ -624,6 +629,11 @@ class LiveTranslateWindow(QMainWindow):
         if enabled:
             self.append_log(
                 "Debugmodus aktiviert"
+            )
+
+            self.append_log(
+                "Vollständiges Protokoll: "
+                "logs/pipeline_debug.log"
             )
 
     @staticmethod
