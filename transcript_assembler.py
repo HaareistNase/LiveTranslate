@@ -1,37 +1,55 @@
-import re
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from config import ASR_MIN_TEXT_CHARACTERS
+from config import (
+    ASR_LINE_MAX_SECONDS,
+    ASR_LINE_STALE_SECONDS,
+    ASR_MIN_TEXT_CHARACTERS,
+)
 from hallucination_filter import (
     is_known_hallucination,
     normalize_text,
 )
 
 
-_WORD_PATTERN = re.compile(
-    r"\S+",
-    re.UNICODE
-)
-
-
 @dataclass
-class ActiveLine:
-    speaker: str
-    start: str
+class LiveLine:
+    key: tuple[str, str]
     text: str
-    emitted_words: int
-    last_update: float
+    created_at: float
+    updated_at: float
+    committed_text: str = ""
+
+
+def _common_prefix_word_count(
+    previous: str,
+    current: str
+) -> int:
+    previous_words = previous.split()
+    current_words = current.split()
+
+    count = 0
+
+    for left, right in zip(
+        previous_words,
+        current_words
+    ):
+        if left.casefold() != right.casefold():
+            break
+
+        count += 1
+
+    return count
 
 
 class TranscriptAssembler:
     """
-    Gibt bei wachsenden Whisper-Zeilen nur stabile Wörter frei.
+    Verwalter für wachsende WhisperLiveKit-Zeilen.
 
-    Das jeweils letzte Wort bleibt zunächst zurück, weil Whisper es
-    noch verlängern oder korrigieren kann. So entstehen keine Fragmente
-    wie "Анд рей", "рус ский" oder "Ж ив у".
+    Zwischenstände derselben Zeile ersetzen nur deren internen Stand.
+    An den ContextBuffer geht erst eine abgeschlossene vollständige
+    Zeile.
     """
 
     def __init__(
@@ -40,12 +58,12 @@ class TranscriptAssembler:
     ):
         self.logger = logger
 
-        self.active_lines: dict[
+        self.lines: dict[
             tuple[str, str],
-            ActiveLine
+            LiveLine
         ] = {}
 
-        self.last_active_key: (
+        self.active_key: (
             tuple[str, str] | None
         ) = None
 
@@ -84,77 +102,91 @@ class TranscriptAssembler:
         )
 
     @staticmethod
-    def _words(
-        text: str
-    ) -> list[str]:
-        return _WORD_PATTERN.findall(
-            normalize_text(text)
-        )
-
-    def _emit_stable_words(
-        self,
-        line: ActiveLine
+    def _new_part(
+        committed_text: str,
+        final_text: str
     ) -> str:
-        words = self._words(
-            line.text
+        committed_text = normalize_text(
+            committed_text
         )
 
-        stable_word_count = max(
-            0,
-            len(words) - 1
+        final_text = normalize_text(
+            final_text
         )
 
-        if (
-            stable_word_count
-            <= line.emitted_words
-        ):
+        if not final_text:
             return ""
 
-        new_words = words[
-            line.emitted_words:
-            stable_word_count
-        ]
+        if not committed_text:
+            return final_text
 
-        line.emitted_words = (
-            stable_word_count
+        if final_text == committed_text:
+            return ""
+
+        if final_text.startswith(
+            committed_text
+        ):
+            return final_text[
+                len(committed_text):
+            ].strip()
+
+        prefix_words = (
+            _common_prefix_word_count(
+                committed_text,
+                final_text
+            )
         )
 
-        return " ".join(
-            new_words
-        ).strip()
+        final_words = final_text.split()
 
-    def _finalize_line(
+        if prefix_words:
+            return " ".join(
+                final_words[
+                    prefix_words:
+                ]
+            ).strip()
+
+        return ""
+
+    def _commit(
         self,
-        key: tuple[str, str]
+        key: tuple[str, str],
+        keep_line: bool
     ) -> str:
-        line = self.active_lines.pop(
-            key,
-            None
+        line = self.lines.get(
+            key
         )
 
         if line is None:
             return ""
 
-        words = self._words(
+        output = self._new_part(
+            line.committed_text,
             line.text
         )
 
-        remaining = " ".join(
-            words[
-                line.emitted_words:
-            ]
-        ).strip()
+        line.committed_text = line.text
 
         self._log(
-            "ASSEMBLER_FINALIZE",
+            "LIVELINE_COMMIT",
             {
                 "key": key,
-                "remaining": remaining,
                 "full_text": line.text,
+                "output": output,
+                "keep_line": keep_line,
             }
         )
 
-        return remaining
+        if not keep_line:
+            self.lines.pop(
+                key,
+                None
+            )
+
+            if self.active_key == key:
+                self.active_key = None
+
+        return output
 
     def add_item(
         self,
@@ -167,7 +199,7 @@ class TranscriptAssembler:
         )
 
         self._log(
-            "ASSEMBLER_RAW_ITEM",
+            "LIVELINE_UPDATE",
             {
                 "speaker": item.get(
                     "speaker"
@@ -201,129 +233,114 @@ class TranscriptAssembler:
         output_parts = []
 
         if (
-            self.last_active_key is not None
-            and key != self.last_active_key
+            self.active_key is not None
+            and key != self.active_key
         ):
-            remaining = self._finalize_line(
-                self.last_active_key
+            previous_output = self._commit(
+                self.active_key,
+                keep_line=False
             )
 
-            if remaining:
+            if previous_output:
                 output_parts.append(
-                    remaining
+                    previous_output
                 )
 
         now = time.monotonic()
 
-        line = self.active_lines.get(
+        line = self.lines.get(
             key
         )
 
         if line is None:
-            line = ActiveLine(
-                speaker=key[0],
-                start=key[1],
+            line = LiveLine(
+                key=key,
                 text=text,
-                emitted_words=0,
-                last_update=now
+                created_at=now,
+                updated_at=now
             )
 
-            self.active_lines[key] = (
-                line
-            )
+            self.lines[key] = line
 
         else:
             line.text = text
-            line.last_update = now
+            line.updated_at = now
 
-            line.emitted_words = min(
-                line.emitted_words,
-                len(
-                    self._words(text)
+        self.active_key = key
+
+        if (
+            now - line.created_at
+            >= ASR_LINE_MAX_SECONDS
+        ):
+            forced_output = self._commit(
+                key,
+                keep_line=True
+            )
+
+            line.created_at = now
+
+            if forced_output:
+                output_parts.append(
+                    forced_output
                 )
-            )
 
-        self.last_active_key = key
-
-        stable = self._emit_stable_words(
-            line
-        )
-
-        if stable:
-            output_parts.append(
-                stable
-            )
-
-        output = " ".join(
-            part
-            for part in output_parts
-            if part
+        return " ".join(
+            output_parts
         ).strip()
-
-        self._log(
-            "ASSEMBLER_OUTPUT",
-            {
-                "key": key,
-                "current": text,
-                "emitted_words": (
-                    line.emitted_words
-                ),
-                "new_text": output,
-            }
-        )
-
-        return output
 
     def flush_stale(
         self,
-        maximum_age_seconds: float = 1.2
+        maximum_age_seconds: float | None = None
     ) -> str:
-        if self.last_active_key is None:
+        if self.active_key is None:
             return ""
 
-        line = self.active_lines.get(
-            self.last_active_key
+        line = self.lines.get(
+            self.active_key
         )
 
         if line is None:
+            self.active_key = None
             return ""
+
+        stale_seconds = (
+            ASR_LINE_STALE_SECONDS
+            if maximum_age_seconds is None
+            else maximum_age_seconds
+        )
 
         if (
             time.monotonic()
-            - line.last_update
-            < maximum_age_seconds
+            - line.updated_at
+            < stale_seconds
         ):
             return ""
 
-        remaining = self._finalize_line(
-            self.last_active_key
+        return self._commit(
+            self.active_key,
+            keep_line=False
         )
-
-        self.last_active_key = None
-
-        return remaining
 
     def flush_all(
         self
     ) -> str:
-        parts = []
+        outputs = []
 
         for key in list(
-            self.active_lines.keys()
+            self.lines.keys()
         ):
-            remaining = (
-                self._finalize_line(
-                    key
-                )
+            output = self._commit(
+                key,
+                keep_line=False
             )
 
-            if remaining:
-                parts.append(
-                    remaining
+            if output:
+                outputs.append(
+                    output
                 )
 
-        self.last_active_key = None
+        self.active_key = None
 
         return " ".join(
-            parts
+            outputs
         ).strip()

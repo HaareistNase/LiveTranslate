@@ -963,7 +963,7 @@ class WLKStream:
 
                 if not new_text:
                     self.pipeline_logger.log(
-                        "ASSEMBLER_SKIPPED",
+                        "LIVELINE_PENDING",
                         item.get("text")
                     )
                     continue

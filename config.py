@@ -155,3 +155,8 @@ WLK_ASR_WATCHDOG_SECONDS = 12.0
 # Solange die automatische Sprache noch nicht sicher erkannt ist,
 # werden übersetzbare Kontextblöcke nicht verworfen.
 PENDING_LANGUAGE_SEGMENTS_MAX = 32
+
+
+# LiveLineTracker
+ASR_LINE_STALE_SECONDS = 1.8
+ASR_LINE_MAX_SECONDS = 12.0
