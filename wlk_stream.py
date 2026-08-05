@@ -43,7 +43,7 @@ from nllb_translator import NLLBTranslator
 from context_buffer import ContextBuffer
 from transcript_assembler import TranscriptAssembler
 from pipeline_logger import PipelineLogger
-from segment_probe import SegmentProbe
+from pipeline_probe import PipelineProbe
 
 
 class WLKStream:
@@ -80,7 +80,7 @@ class WLKStream:
             )
         )
 
-        self.segment_probe = SegmentProbe()
+        self.pipeline_probe = PipelineProbe()
 
         self.context_buffer = ContextBuffer(
             logger=self.pipeline_logger
@@ -252,6 +252,11 @@ class WLKStream:
                     language
                 ),
                 timeout=1.0
+            )
+
+            self.pipeline_probe.queue_item(
+                segment,
+                language
             )
 
             self.nllb_block_count += 1
@@ -660,10 +665,18 @@ class WLKStream:
                     ]
                 )
 
+                self.pipeline_probe.nllb_input(
+                    batch
+                )
+
                 translations = (
                     self.translator.translate_batch(
                         batch
                     )
+                )
+
+                self.pipeline_probe.nllb_output(
+                    translations
                 )
 
                 self.pipeline_logger.log(
@@ -683,6 +696,10 @@ class WLKStream:
 
                     self.pipeline_logger.log(
                         "GUI_SUBTITLE",
+                        german
+                    )
+
+                    self.pipeline_probe.gui_output(
                         german
                     )
 
@@ -900,9 +917,19 @@ class WLKStream:
                         )
                     )
 
-                self.enqueue_segments(
+                timeout_blocks = (
                     self.context_buffer.flush_if_old()
                 )
+
+                self.pipeline_probe.context_output(
+                    "timeout_flush",
+                    timeout_blocks
+                )
+
+                self.enqueue_segments(
+                    timeout_blocks
+                )
+
                 continue
 
             data = json.loads(
@@ -948,7 +975,7 @@ class WLKStream:
                     []
                 )
 
-            self.segment_probe.record_packet(
+            self.pipeline_probe.packet(
                 data,
                 items
             )
@@ -959,7 +986,7 @@ class WLKStream:
             )
 
             for item in items:
-                self.segment_probe.record_item(
+                self.pipeline_probe.raw_item(
                     item
                 )
 
@@ -973,7 +1000,7 @@ class WLKStream:
                     .add_item(item)
                 )
 
-                self.segment_probe.record_output(
+                self.pipeline_probe.tracker_output(
                     item,
                     new_text
                 )
@@ -1000,14 +1027,36 @@ class WLKStream:
 
                 self.emit_metrics()
 
-                self.enqueue_segments(
+                self.pipeline_probe.context_input(
+                    new_text
+                )
+
+                context_blocks = (
                     self.context_buffer.add_confirmed(
                         new_text
                     )
                 )
 
-            self.enqueue_segments(
+                self.pipeline_probe.context_output(
+                    "confirmed_text",
+                    context_blocks
+                )
+
+                self.enqueue_segments(
+                    context_blocks
+                )
+
+            packet_flush_blocks = (
                 self.context_buffer.flush_if_old()
+            )
+
+            self.pipeline_probe.context_output(
+                "packet_flush",
+                packet_flush_blocks
+            )
+
+            self.enqueue_segments(
+                packet_flush_blocks
             )
 
     async def run_async(self) -> None:
@@ -1156,8 +1205,6 @@ class WLKStream:
         self.main_thread.start()
 
     def stop(self) -> None:
-        self.segment_probe.record_stop()
-
         self.bridge.status_ready.emit(
             "Audioaufnahme wird beendet …"
         )
@@ -1198,14 +1245,36 @@ class WLKStream:
 
             self.emit_metrics()
 
-            self.enqueue_segments(
+            self.pipeline_probe.context_input(
+                pending_text
+            )
+
+            pending_blocks = (
                 self.context_buffer.add_confirmed(
                     pending_text
                 )
             )
 
-        self.enqueue_segments(
+            self.pipeline_probe.context_output(
+                "stop_pending",
+                pending_blocks
+            )
+
+            self.enqueue_segments(
+                pending_blocks
+            )
+
+        final_blocks = (
             self.context_buffer.flush_all()
+        )
+
+        self.pipeline_probe.context_output(
+            "stop_final_flush",
+            final_blocks
+        )
+
+        self.enqueue_segments(
+            final_blocks
         )
 
         self.bridge.status_ready.emit(
@@ -1236,6 +1305,8 @@ class WLKStream:
             self.translation_thread.join(timeout=5)
 
         self.stop_event.set()
+
+        self.pipeline_probe.finish()
 
         self.bridge.status_ready.emit(
             "Verarbeitung abgeschlossen"

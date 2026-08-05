@@ -1,49 +1,42 @@
-LiveTranslate v18.10-prefix – Präfix-basierter Tracker
+LiveTranslate v18.11-pipeline-probe
 
-Dieser Patch verändert ausschließlich:
+Reiner Diagnosepatch. Es werden keine ASR-, Tracker-, Kontext-,
+Übersetzungs- oder GUI-Entscheidungen verändert.
 
-- transcript_assembler.py
+Enthalten:
 - version.py
-- tests/test_prefix_tracker.py
-
-Unverändert bleiben:
-
-- main_gui.py
 - wlk_stream.py
+- pipeline_probe.py
+
+Nicht enthalten und unverändert:
+- transcript_assembler.py
+- main_gui.py
 - context_buffer.py
 - config.py
-- Audio
-- ASR-Zeitwerte
-- Übersetzer
+- nllb_translator.py
 
-Neue Logik:
+Pro Sitzung entstehen:
 
-WhisperLiveKit kann dieselbe Startzeit sehr lange weiterführen.
-Nach einer Zwischenfreigabe wird die Zeile deshalb nicht mehr gelöscht.
+logs\pipeline_probe\pipeline_probe_YYYYMMDD_HHMMSS.jsonl
+logs\pipeline_probe\pipeline_summary_YYYYMMDD_HHMMSS.json
 
-Der Tracker speichert dauerhaft:
+Protokollierte Übergänge:
 
-- den neuesten vollständigen Whisper-Text
-- den bereits an NLLB ausgegebenen Präfix
+1. websocket_packet
+2. raw_item
+3. tracker_output
+4. context_input
+5. context_output
+6. translation_queue
+7. nllb_input
+8. nllb_output
+9. gui_output
 
-Bei späterem Wachstum derselben Zeile wird nur der neue Wort-Suffix
-ausgegeben.
-
-Beispiel:
-
-1. Ausgabe:
-   "Сейчас мои дети спят"
-
-2. Neuer vollständiger WLK-Stand:
-   "Сейчас мои дети спят я пока записываю это видео"
-
-3. Neue Ausgabe:
-   "я пока записываю это видео"
-
-Der bereits ausgegebene Anfang erscheint niemals erneut.
-
-Diesen Patch über den funktionierenden Stand v18.8-gui kopieren.
+Test:
+1. Über den aktuellen v18.10-prefix-Stand kopieren.
+2. Referenzvideo 60 bis 90 Sekunden abspielen.
+3. Stopp drücken und Offline-Auswertung abwarten.
+4. Neueste pipeline_probe_*.jsonl und pipeline_summary_*.json hochladen.
 
 Fenstertitel:
-
-LiveTranslate v18.10-prefix [develop]
+LiveTranslate v18.11-pipeline-probe [develop]
