@@ -1,35 +1,29 @@
-LiveTranslate v18.3-dev – Offline-Referenzvergleich
+LiveTranslate v18.4-dev – Stabile Wortausgabe
+
+Behoben:
+Die Live-Transkription zerlegte russische Wörter, weil bei jeder
+Whisper-Erweiterung sofort der reine Zeichensuffix ausgegeben wurde.
+
+Beispiele:
+- Андрей -> Анд рей
+- русский -> рус ский
+- живу -> Ж ив у
+- Сибири -> С иб ири
+
+Neue Logik:
+- Das letzte Wort einer wachsenden Zeile wird zurückgehalten.
+- Erst beim Beginn eines weiteren Wortes gilt es als stabil.
+- Beim Zeilenwechsel wird der Rest ausgegeben.
+- Nach 1,2 Sekunden ohne Aktualisierung wird die Zeile abgeschlossen.
+- Beim Stoppen wird sämtlicher Resttext ausgegeben.
 
 Enthalten:
 - version.py
-- config.py
-- main_gui.py
+- transcript_assembler.py
 - wlk_stream.py
-- reference_benchmark.py
+- tests/test_transcript_word_stability.py
 
 Keine .gitignore, keine Modelle, keine virtuellen Umgebungen.
 
-Test mit dem Referenzvideo:
-https://www.youtube.com/watch?v=JeRb7Ud1kSU
-
-Ablauf:
-1. GUI starten.
-2. Quellsprache passend wählen oder Automatisch lassen.
-3. "Offline-Referenzvergleich" aktivieren.
-4. Start drücken.
-5. Einen klar abgegrenzten Abschnitt des Videos abspielen, z. B. 60 Sekunden.
-6. Video pausieren.
-7. Stopp drücken.
-8. Die App transkribiert exakt die aufgezeichnete Audiospur noch einmal
-   offline mit faster-whisper large-v3.
-9. Danach zeigt die GUI:
-   - Wort- und Zeichenzahl der Live-Erkennung
-   - Wort- und Zeichenzahl der Offline-Referenz
-   - prozentuale Abdeckung
-
-Berichte liegen unter:
-logs\reference\
-
-Wichtig:
-Die Offline-Auswertung startet erst nach Stopp und kann je nach Länge
-etwas dauern. Sie verwendet die RTX-GPU.
+Erwarteter Fenstertitel:
+LiveTranslate v18.4-dev [develop]

@@ -635,6 +635,30 @@ class WLKStream:
                 )
 
             except asyncio.TimeoutError:
+                pending_text = (
+                    self.transcript_assembler
+                    .flush_stale()
+                )
+
+                if pending_text:
+                    self.asr_update_count += 1
+                    self.asr_character_count += len(
+                        pending_text
+                    )
+
+                    self.live_original_parts.append(
+                        pending_text
+                    )
+
+                    self.emit_metrics()
+
+                    self.enqueue_segments(
+                        self.context_buffer
+                        .add_confirmed(
+                            pending_text
+                        )
+                    )
+
                 self.enqueue_segments(
                     self.context_buffer.flush_if_old()
                 )
@@ -806,6 +830,30 @@ class WLKStream:
         self.main_thread.start()
 
     def stop(self) -> None:
+        pending_text = (
+            self.transcript_assembler
+            .flush_all()
+        )
+
+        if pending_text:
+            self.asr_update_count += 1
+            self.asr_character_count += len(
+                pending_text
+            )
+
+            self.live_original_parts.append(
+                pending_text
+            )
+
+            self.emit_metrics()
+
+            self.enqueue_segments(
+                self.context_buffer
+                .add_confirmed(
+                    pending_text
+                )
+            )
+
         self.enqueue_segments(
             self.context_buffer.flush_all()
         )

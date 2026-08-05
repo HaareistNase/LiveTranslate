@@ -1,283 +1,125 @@
 import re
-from collections import deque
-from difflib import SequenceMatcher
+import time
+from dataclasses import dataclass
 from typing import Any
 
-from config import (
-    ASR_DUPLICATE_SIMILARITY,
-    ASR_FUZZY_WORD_SIMILARITY,
-    ASR_MIN_TEXT_CHARACTERS,
-    ASR_OVERLAP_MAX_WORDS,
-    ASR_RECENT_LINE_CACHE,
-)
+from config import ASR_MIN_TEXT_CHARACTERS
 from hallucination_filter import (
     is_known_hallucination,
     normalize_text,
 )
 
 
-_WORD_CLEANUP = re.compile(
-    r"[^\w'-]+",
+_WORD_PATTERN = re.compile(
+    r"\S+",
     re.UNICODE
 )
 
 
-def _word_key(word: str) -> str:
-    return _WORD_CLEANUP.sub(
-        "",
-        word.casefold()
-    )
-
-
-def _text_key(text: str) -> str:
-    return " ".join(
-        token
-        for token in (
-            _word_key(word)
-            for word in normalize_text(text).split()
-        )
-        if token
-    )
-
-
-def _similar(
-    left: str,
-    right: str,
-    threshold: float
-) -> bool:
-    if left == right:
-        return True
-
-    if not left or not right:
-        return False
-
-    return (
-        SequenceMatcher(
-            None,
-            left,
-            right
-        ).ratio()
-        >= threshold
-    )
-
-
-def _words_match(
-    left: str,
-    right: str
-) -> bool:
-    left_key = _word_key(left)
-    right_key = _word_key(right)
-
-    if left_key == right_key:
-        return True
-
-    if (
-        len(left_key) < 4
-        or len(right_key) < 4
-    ):
-        return False
-
-    return _similar(
-        left_key,
-        right_key,
-        ASR_FUZZY_WORD_SIMILARITY
-    )
-
-
-def find_word_overlap(
-    previous: str,
-    current: str
-) -> int:
-    previous_words = normalize_text(
-        previous
-    ).split()
-
-    current_words = normalize_text(
-        current
-    ).split()
-
-    maximum = min(
-        len(previous_words),
-        len(current_words),
-        ASR_OVERLAP_MAX_WORDS
-    )
-
-    for overlap in range(
-        maximum,
-        0,
-        -1
-    ):
-        previous_tail = previous_words[
-            -overlap:
-        ]
-
-        current_head = current_words[
-            :overlap
-        ]
-
-        matches = sum(
-            1
-            for left, right in zip(
-                previous_tail,
-                current_head
-            )
-            if _words_match(
-                left,
-                right
-            )
-        )
-
-        required = max(
-            1,
-            int(overlap * 0.82)
-        )
-
-        if matches >= required:
-            return overlap
-
-    return 0
-
-
-def get_growth_suffix(
-    previous: str,
-    current: str
-) -> str:
-    previous = normalize_text(previous)
-    current = normalize_text(current)
-
-    if not current:
-        return ""
-
-    if not previous:
-        return current
-
-    if current == previous:
-        return ""
-
-    if current.startswith(previous):
-        return current[
-            len(previous):
-        ].strip()
-
-    if previous.startswith(current):
-        return ""
-
-    overlap = find_word_overlap(
-        previous,
-        current
-    )
-
-    if overlap:
-        return " ".join(
-            current.split()[overlap:]
-        ).strip()
-
-    return ""
+@dataclass
+class ActiveLine:
+    speaker: str
+    start: str
+    text: str
+    emitted_words: int
+    last_update: float
 
 
 class TranscriptAssembler:
-    def __init__(
-        self,
-        logger=None
-    ):
+    """
+    Gibt bei wachsenden Whisper-Zeilen nur stabile Wörter frei.
+
+    Das jeweils letzte Wort bleibt zunächst zurück, weil Whisper es
+    noch verlängern oder korrigieren kann. So entstehen keine Fragmente
+    wie "Анд рей", "рус ский" oder "Ж ив у".
+    """
+
+    def __init__(self, logger=None):
         self.logger = logger
-
-        self.line_versions: dict[
-            str,
-            str
+        self.active_lines: dict[
+            tuple[str, str],
+            ActiveLine
         ] = {}
+        self.last_active_key: (
+            tuple[str, str] | None
+        ) = None
 
-        self.line_order = deque(
-            maxlen=ASR_RECENT_LINE_CACHE
-        )
-
-        self.recent_completed_keys = deque(
-            maxlen=ASR_RECENT_LINE_CACHE
-        )
-
-        self.last_unidentified_text = ""
+    def _log(self, stage: str, value) -> None:
+        if self.logger is not None:
+            self.logger.log(stage, value)
 
     @staticmethod
-    def _line_id(
+    def _line_key(
         item: dict[str, Any]
-    ) -> str:
-        """
-        WhisperLiveKit verlängert dieselbe laufende Zeile fortlaufend.
-        Dabei bleibt der Startzeitpunkt gleich, während sich die Endzeit
-        bei nahezu jedem Update verändert.
-
-        Deshalb darf die Endzeit nicht Teil der Zeilen-ID sein.
-        """
+    ) -> tuple[str, str] | None:
         start = item.get("start")
-        speaker = item.get("speaker")
 
         if start is None:
+            return None
+
+        speaker = str(
+            item.get("speaker", "")
+        )
+
+        return speaker, str(start)
+
+    @staticmethod
+    def _words(text: str) -> list[str]:
+        return _WORD_PATTERN.findall(
+            normalize_text(text)
+        )
+
+    def _emit_stable_words(
+        self,
+        line: ActiveLine
+    ) -> str:
+        words = self._words(line.text)
+
+        stable_word_count = max(
+            0,
+            len(words) - 1
+        )
+
+        if stable_word_count <= line.emitted_words:
             return ""
 
-        return f"{speaker}|{start}"
+        new_words = words[
+            line.emitted_words:
+            stable_word_count
+        ]
 
-    def _remember_line_version(
+        line.emitted_words = stable_word_count
+
+        return " ".join(new_words).strip()
+
+    def _finalize_line(
         self,
-        line_id: str,
-        text: str
-    ) -> None:
-        if line_id not in self.line_versions:
-            self.line_order.append(
-                line_id
-            )
+        key: tuple[str, str]
+    ) -> str:
+        line = self.active_lines.pop(
+            key,
+            None
+        )
 
-        self.line_versions[line_id] = text
+        if line is None:
+            return ""
 
-        while (
-            len(self.line_versions)
-            > ASR_RECENT_LINE_CACHE
-            and self.line_order
-        ):
-            oldest = self.line_order.popleft()
+        words = self._words(line.text)
 
-            self.line_versions.pop(
-                oldest,
-                None
-            )
+        remaining = " ".join(
+            words[line.emitted_words:]
+        ).strip()
 
-    def _is_completed_duplicate(
-        self,
-        text: str
-    ) -> bool:
-        key = _text_key(text)
-
-        if not key:
-            return True
-
-        for old_key in self.recent_completed_keys:
-            if _similar(
-                key,
-                old_key,
-                ASR_DUPLICATE_SIMILARITY
-            ):
-                return True
-
-        return False
-
-    def _log_output(
-        self,
-        line_id: str,
-        previous: str,
-        current: str,
-        new_text: str
-    ) -> None:
-        if self.logger is None:
-            return
-
-        self.logger.log(
-            "ASSEMBLER_OUTPUT",
+        self._log(
+            "ASSEMBLER_FINALIZE",
             {
-                "line_id": line_id,
-                "previous": previous,
-                "current": current,
-                "new_text": new_text,
+                "key": key,
+                "remaining": remaining,
+                "full_text": line.text,
             }
         )
+
+        return remaining
 
     def add_item(
         self,
@@ -287,93 +129,123 @@ class TranscriptAssembler:
             item.get("text")
         )
 
-        if self.logger is not None:
-            self.logger.log(
-                "ASSEMBLER_RAW_ITEM",
-                {
-                    "start": item.get("start"),
-                    "end": item.get("end"),
-                    "text": text,
-                }
-            )
+        self._log(
+            "ASSEMBLER_RAW_ITEM",
+            {
+                "speaker": item.get("speaker"),
+                "start": item.get("start"),
+                "end": item.get("end"),
+                "text": text,
+            }
+        )
 
         if (
-            len(text)
-            < ASR_MIN_TEXT_CHARACTERS
+            len(text) < ASR_MIN_TEXT_CHARACTERS
             or is_known_hallucination(text)
         ):
             return ""
 
-        line_id = self._line_id(
-            item
-        )
+        key = self._line_key(item)
 
-        if line_id:
-            previous_version = (
-                self.line_versions.get(
-                    line_id,
-                    ""
-                )
+        if key is None:
+            return text
+
+        output_parts = []
+
+        if (
+            self.last_active_key is not None
+            and key != self.last_active_key
+        ):
+            remaining = self._finalize_line(
+                self.last_active_key
             )
 
-            new_text = get_growth_suffix(
-                previous_version,
-                text
+            if remaining:
+                output_parts.append(remaining)
+
+        now = time.monotonic()
+        line = self.active_lines.get(key)
+
+        if line is None:
+            line = ActiveLine(
+                speaker=key[0],
+                start=key[1],
+                text=text,
+                emitted_words=0,
+                last_update=now
             )
-
-            self._remember_line_version(
-                line_id,
-                text
-            )
-
-            self._log_output(
-                line_id,
-                previous_version,
-                text,
-                new_text
-            )
-
-            return new_text
-
-        previous = self.last_unidentified_text
-
-        if not previous:
-            new_text = text
-
+            self.active_lines[key] = line
         else:
-            new_text = get_growth_suffix(
-                previous,
-                text
+            line.text = text
+            line.last_update = now
+            line.emitted_words = min(
+                line.emitted_words,
+                len(self._words(text))
             )
 
-            if (
-                not new_text
-                and not self._is_completed_duplicate(
-                    text
-                )
-                and not _similar(
-                    _text_key(previous),
-                    _text_key(text),
-                    ASR_DUPLICATE_SIMILARITY
-                )
-            ):
-                new_text = text
+        self.last_active_key = key
 
-        self.last_unidentified_text = text
+        stable = self._emit_stable_words(line)
 
-        if new_text == text:
-            key = _text_key(text)
+        if stable:
+            output_parts.append(stable)
 
-            if key:
-                self.recent_completed_keys.append(
-                    key
-                )
+        output = " ".join(
+            part
+            for part in output_parts
+            if part
+        ).strip()
 
-        self._log_output(
-            "",
-            previous,
-            text,
-            new_text
+        self._log(
+            "ASSEMBLER_OUTPUT",
+            {
+                "key": key,
+                "current": text,
+                "emitted_words": line.emitted_words,
+                "new_text": output,
+            }
         )
 
-        return new_text
+        return output
+
+    def flush_stale(
+        self,
+        maximum_age_seconds: float = 1.2
+    ) -> str:
+        if self.last_active_key is None:
+            return ""
+
+        line = self.active_lines.get(
+            self.last_active_key
+        )
+
+        if line is None:
+            return ""
+
+        if (
+            time.monotonic() - line.last_update
+            < maximum_age_seconds
+        ):
+            return ""
+
+        remaining = self._finalize_line(
+            self.last_active_key
+        )
+
+        self.last_active_key = None
+        return remaining
+
+    def flush_all(self) -> str:
+        parts = []
+
+        for key in list(
+            self.active_lines.keys()
+        ):
+            remaining = self._finalize_line(key)
+
+            if remaining:
+                parts.append(remaining)
+
+        self.last_active_key = None
+
+        return " ".join(parts).strip()
