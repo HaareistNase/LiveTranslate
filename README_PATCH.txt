@@ -1,27 +1,19 @@
-LiveTranslate v18.4.1-dev – Hotfix auf korrekter Basis
+LiveTranslate v18.5-dev – Kontrollierter WhisperLiveKit-Drain
 
-Wichtig:
-Dieser Patch basiert ausdrücklich auf v18.3.1-dev und behält den
-funktionierenden Konstruktorparameter `reference_capture`.
+Beim Stoppen wird die Aufnahme nicht mehr abrupt beendet.
 
-Behoben:
-- Kein Fehler mehr:
-  WLKStream.__init__() got an unexpected keyword argument
-  'reference_capture'
-- Russische Wörter werden nicht mehr als Zeichensuffixe zerlegt.
-- Das letzte potenziell unfertige Wort wird zurückgehalten.
-- Bei Pause, Zeilenwechsel oder Stopp wird der Rest ausgegeben.
+Ablauf:
+1. Audioaufnahme anhalten.
+2. Audioqueue vollständig senden.
+3. Leeres PCM-Paket an WhisperLiveKit senden.
+4. Auf `ready_to_stop` warten.
+5. Letztes Wort und ContextBuffer freigeben.
+6. Übersetzungsqueue vollständig abarbeiten.
+7. Erst danach den Live-Text für den Referenzvergleich lesen.
 
-Enthalten:
-- version.py
-- transcript_assembler.py
-- wlk_stream.py
-- main_gui.py
-- config.py
-- reference_benchmark.py
-- tests/test_transcript_word_stability.py
+Die stabile Wortausgabe aus v18.4.1 bleibt erhalten.
 
 Keine .gitignore, keine Modelle, keine virtuellen Umgebungen.
 
-Erwarteter Fenstertitel:
-LiveTranslate v18.4.1-dev [develop]
+Fenstertitel:
+LiveTranslate v18.5-dev [develop]

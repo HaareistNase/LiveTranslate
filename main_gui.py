@@ -1210,16 +1210,17 @@ class LiveTranslateWindow(QMainWindow):
                     .get_reference_wav_path()
                 )
 
-                live_original_text = (
-                    self.stream
-                    .get_live_original_text()
-                )
-
                 reference_language = (
                     self.stream.source_language
                 )
 
                 self.stream.stop()
+
+                live_original_text = (
+                    self.stream
+                    .get_live_original_text()
+                )
+
                 self.stream = None
 
             self.server.stop()

@@ -23,6 +23,7 @@ from config import (
     TRANSLATION_BATCH_WAIT_SECONDS,
     WHISPER_TO_NLLB,
     WLK_HEALTH_URL,
+    WLK_DRAIN_TIMEOUT_SECONDS,
     WLK_WS_URL,
 )
 from hallucination_filter import normalize_text
@@ -47,7 +48,10 @@ class WLKStream:
         self.reference_wave_file = None
         self.live_original_parts = []
 
+        self.audio_stop_event = threading.Event()
         self.stop_event = threading.Event()
+        self.server_ready_to_stop_event = threading.Event()
+        self.stream_finished_event = threading.Event()
 
         self.audio_queue = queue.Queue(
             maxsize=32
@@ -254,7 +258,7 @@ class WLKStream:
                     samplerate=SAMPLE_RATE
                 ) as recorder:
 
-                    while not self.stop_event.is_set():
+                    while not self.audio_stop_event.is_set():
                         audio = recorder.record(
                             numframes=frames
                         )
@@ -616,20 +620,31 @@ class WLKStream:
         websocket
     ) -> None:
         while not self.stop_event.is_set():
+            if (
+                self.audio_stop_event.is_set()
+                and self.audio_queue.empty()
+            ):
+                self.bridge.status_ready.emit(
+                    "Audio beendet · "
+                    "Whisper-Rückstand wird verarbeitet …"
+                )
+
+                # Offizielles WLK-Endsignal für PCM-Streaming.
+                await websocket.send(b"")
+                return
+
             try:
                 pcm = await asyncio.to_thread(
                     self.audio_queue.get,
                     True,
-                    0.5
+                    0.25
                 )
 
             except queue.Empty:
                 continue
 
             try:
-                await websocket.send(
-                    pcm
-                )
+                await websocket.send(pcm)
 
             finally:
                 self.audio_queue.task_done()
@@ -695,6 +710,12 @@ class WLKStream:
                 continue
 
             if data.get("type") == "ready_to_stop":
+                self.server_ready_to_stop_event.set()
+
+                self.bridge.status_ready.emit(
+                    "Whisper-Rückstand vollständig verarbeitet"
+                )
+
                 break
 
             self.update_language(
@@ -770,26 +791,40 @@ class WLKStream:
             ping_timeout=20
         ) as websocket:
             sender = asyncio.create_task(
-                self.send_audio(
-                    websocket
-                )
+                self.send_audio(websocket)
             )
 
             receiver = asyncio.create_task(
-                self.receive(
-                    websocket
-                )
+                self.receive(websocket)
             )
 
             try:
-                await asyncio.gather(
-                    sender,
-                    receiver
+                await sender
+
+                await asyncio.wait_for(
+                    receiver,
+                    timeout=WLK_DRAIN_TIMEOUT_SECONDS
                 )
 
-            finally:
-                sender.cancel()
+            except asyncio.TimeoutError:
+                self.bridge.error_ready.emit(
+                    "WhisperLiveKit-Drain hat das "
+                    "Zeitlimit überschritten."
+                )
+
                 receiver.cancel()
+
+                try:
+                    await receiver
+                except asyncio.CancelledError:
+                    pass
+
+            finally:
+                if not sender.done():
+                    sender.cancel()
+
+                if not receiver.done():
+                    receiver.cancel()
 
     def stream_worker(self) -> None:
         try:
@@ -802,6 +837,9 @@ class WLKStream:
                 self.bridge.error_ready.emit(
                     f"WhisperLiveKit: {error}"
                 )
+
+        finally:
+            self.stream_finished_event.set()
 
     def get_live_original_text(
         self
@@ -841,6 +879,29 @@ class WLKStream:
         self.main_thread.start()
 
     def stop(self) -> None:
+        self.bridge.status_ready.emit(
+            "Audioaufnahme wird beendet …"
+        )
+
+        self.audio_stop_event.set()
+
+        if self.audio_thread is not None:
+            self.audio_thread.join(timeout=5)
+
+        if self.main_thread is not None:
+            self.main_thread.join(
+                timeout=WLK_DRAIN_TIMEOUT_SECONDS + 5
+            )
+
+        if (
+            self.main_thread is not None
+            and self.main_thread.is_alive()
+        ):
+            self.bridge.error_ready.emit(
+                "WhisperLiveKit konnte nicht "
+                "vollständig geleert werden."
+            )
+
         pending_text = (
             self.transcript_assembler
             .flush_all()
@@ -859,8 +920,7 @@ class WLKStream:
             self.emit_metrics()
 
             self.enqueue_segments(
-                self.context_buffer
-                .add_confirmed(
+                self.context_buffer.add_confirmed(
                     pending_text
                 )
             )
@@ -869,22 +929,35 @@ class WLKStream:
             self.context_buffer.flush_all()
         )
 
-        self.stop_event.set()
+        self.bridge.status_ready.emit(
+            "Restliche Übersetzungen werden verarbeitet …"
+        )
+
+        deadline = (
+            time.monotonic()
+            + WLK_DRAIN_TIMEOUT_SECONDS
+        )
+
+        while (
+            self.translation_queue.unfinished_tasks
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
 
         try:
-            self.translation_queue.put_nowait(
-                None
-            )
+            self.translation_queue.put_nowait(None)
 
         except queue.Full:
-            pass
+            self.bridge.error_ready.emit(
+                "Übersetzungswarteschlange konnte "
+                "nicht sauber beendet werden."
+            )
 
-        for thread in (
-            self.audio_thread,
-            self.translation_thread,
-            self.main_thread,
-        ):
-            if thread is not None:
-                thread.join(
-                    timeout=3
-                )
+        if self.translation_thread is not None:
+            self.translation_thread.join(timeout=5)
+
+        self.stop_event.set()
+
+        self.bridge.status_ready.emit(
+            "Verarbeitung abgeschlossen"
+        )
