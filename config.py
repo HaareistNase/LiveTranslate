@@ -124,3 +124,10 @@ PIPELINE_DEBUG_GUI_TEXT_LIMIT = 320
 # Ein Kontextblock wird auch bei durchgehender Sprache spätestens
 # nach dieser Zeit ausgegeben.
 CONTEXT_MAX_WAIT_SECONDS = 6.0
+
+
+# Offline-Referenzvergleich
+REFERENCE_OUTPUT_DIR = "logs/reference"
+REFERENCE_MODEL = "large-v3"
+REFERENCE_BEAM_SIZE = 5
+REFERENCE_COMPUTE_TYPE = "float16"

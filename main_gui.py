@@ -35,6 +35,7 @@ from config import (
 )
 from server_manager import WhisperLiveKitServer
 from wlk_stream import WLKStream
+from reference_benchmark import run_reference_benchmark
 from version import (
     BRANCH,
     VERSION,
@@ -44,6 +45,19 @@ from version import (
 
 class GuiBridge(QObject):
     subtitle_ready = Signal(str)
+    source_ready = Signal(str)
+
+    metrics_ready = Signal(
+        int,
+        int,
+        int,
+        int,
+        int,
+        int
+    )
+
+    reference_ready = Signal(dict)
+
     status_ready = Signal(str)
     error_ready = Signal(str)
 
@@ -182,6 +196,10 @@ class LiveTranslateWindow(QMainWindow):
             maxlen=SUBTITLE_HISTORY
         )
 
+        self.source_history = deque(
+            maxlen=SUBTITLE_HISTORY
+        )
+
         self.setWindowTitle(
             f"{display_version()} [{BRANCH}]"
         )
@@ -208,11 +226,24 @@ class LiveTranslateWindow(QMainWindow):
                 font-weight: 600;
             }
 
-            QLabel#SubtitleLabel {
+            QLabel#SubtitleLabel,
+            QLabel#SourceLabel {
                 background-color: #171717;
                 border: 1px solid #333333;
                 border-radius: 8px;
-                padding: 22px;
+                padding: 18px;
+            }
+
+            QLabel#SourceLabel {
+                color: #d0d0d0;
+            }
+
+            QLabel#MetricsLabel {
+                color: #9fb9e8;
+                background-color: #151b24;
+                border: 1px solid #2d405f;
+                border-radius: 6px;
+                padding: 8px 12px;
             }
 
             QLabel#StatusLabel {
@@ -401,6 +432,24 @@ class LiveTranslateWindow(QMainWindow):
             self.language_combo
         )
 
+        controls.addSpacing(
+            18
+        )
+
+        self.reference_checkbox = QCheckBox(
+            "Offline-Referenzvergleich"
+        )
+
+        self.reference_checkbox.setToolTip(
+            "Zeichnet exakt denselben Systemton auf "
+            "und transkribiert ihn nach Stopp noch einmal "
+            "offline mit large-v3."
+        )
+
+        controls.addWidget(
+            self.reference_checkbox
+        )
+
         controls.addStretch(
             1
         )
@@ -500,6 +549,65 @@ class LiveTranslateWindow(QMainWindow):
             level_row
         )
 
+        original_heading = QLabel(
+            "Original – tatsächlich an NLLB gesendet"
+        )
+
+        original_heading.setStyleSheet(
+            "font-size: 14px;"
+            "font-weight: 600;"
+            "color: #b9c8df;"
+        )
+
+        outer_layout.addWidget(
+            original_heading
+        )
+
+        self.source_label = QLabel(
+            "Warte auf bestätigten Originaltext ..."
+        )
+
+        self.source_label.setObjectName(
+            "SourceLabel"
+        )
+
+        self.source_label.setWordWrap(
+            True
+        )
+
+        self.source_label.setAlignment(
+            Qt.AlignLeft
+            | Qt.AlignTop
+        )
+
+        source_font = QFont()
+        source_font.setPointSize(
+            14
+        )
+
+        self.source_label.setFont(
+            source_font
+        )
+
+        outer_layout.addWidget(
+            self.source_label,
+            stretch=1
+        )
+
+        german_heading = QLabel(
+            "Deutsch – NLLB-Ausgabe"
+        )
+
+        german_heading.setStyleSheet(
+            "font-size: 14px;"
+            "font-weight: 600;"
+            "color: #b9c8df;"
+        )
+
+        outer_layout.addWidget(
+            german_heading
+        )
+
         self.subtitle_label = QLabel(
             "Start drücken, um die "
             "Live-Übersetzung zu beginnen."
@@ -515,13 +623,13 @@ class LiveTranslateWindow(QMainWindow):
 
         self.subtitle_label.setAlignment(
             Qt.AlignLeft
-            | Qt.AlignVCenter
+            | Qt.AlignTop
         )
 
         subtitle_font = QFont()
 
         subtitle_font.setPointSize(
-            20
+            18
         )
 
         self.subtitle_label.setFont(
@@ -530,7 +638,25 @@ class LiveTranslateWindow(QMainWindow):
 
         outer_layout.addWidget(
             self.subtitle_label,
-            stretch=1
+            stretch=2
+        )
+
+        self.metrics_label = QLabel(
+            "Whisper: 0 Updates / 0 Zeichen  ·  "
+            "An NLLB: 0 Blöcke / 0 Zeichen  ·  "
+            "Deutsch: 0 Blöcke / 0 Zeichen"
+        )
+
+        self.metrics_label.setObjectName(
+            "MetricsLabel"
+        )
+
+        self.metrics_label.setWordWrap(
+            True
+        )
+
+        outer_layout.addWidget(
+            self.metrics_label
         )
 
         self.status_label = QLabel(
@@ -570,6 +696,18 @@ class LiveTranslateWindow(QMainWindow):
 
         self.bridge.subtitle_ready.connect(
             self.add_subtitle
+        )
+
+        self.bridge.source_ready.connect(
+            self.add_source
+        )
+
+        self.bridge.metrics_ready.connect(
+            self.update_metrics
+        )
+
+        self.bridge.reference_ready.connect(
+            self.show_reference_result
         )
 
         self.bridge.status_ready.connect(
@@ -648,6 +786,102 @@ class LiveTranslateWindow(QMainWindow):
             .replace('"', "&quot;")
         )
 
+    def render_source_history(
+        self
+    ) -> None:
+        if not self.source_history:
+            self.source_label.setText(
+                "Warte auf bestätigten Originaltext ..."
+            )
+            return
+
+        parts = []
+
+        for index, text in enumerate(
+            self.source_history
+        ):
+            latest = (
+                index
+                == len(self.source_history) - 1
+            )
+
+            style = (
+                "font-size: 17px;"
+                "font-weight: 600;"
+                "margin-top: 8px;"
+                if latest
+                else
+                "font-size: 14px;"
+                "color: #909090;"
+                "margin-bottom: 5px;"
+            )
+
+            parts.append(
+                f"<div style='{style}'>"
+                f"{self.escape_html(text)}"
+                "</div>"
+            )
+
+        self.source_label.setText(
+            "".join(parts)
+        )
+
+    def add_source(
+        self,
+        text: str
+    ) -> None:
+        text = text.strip()
+
+        if not text:
+            return
+
+        if (
+            self.source_history
+            and self.source_history[-1] == text
+        ):
+            return
+
+        self.source_history.append(
+            text
+        )
+
+        self.render_source_history()
+
+    def update_metrics(
+        self,
+        asr_updates: int,
+        asr_characters: int,
+        nllb_blocks: int,
+        nllb_characters: int,
+        german_blocks: int,
+        german_characters: int
+    ) -> None:
+        transfer_percent = (
+            round(
+                (
+                    nllb_characters
+                    / asr_characters
+                )
+                * 100
+            )
+            if asr_characters
+            else 0
+        )
+
+        self.metrics_label.setText(
+            f"Whisper bestätigt: "
+            f"{asr_updates} Updates / "
+            f"{asr_characters} Zeichen  ·  "
+            f"An NLLB: "
+            f"{nllb_blocks} Blöcke / "
+            f"{nllb_characters} Zeichen "
+            f"({transfer_percent}% des "
+            f"bestätigten Textes)  ·  "
+            f"Deutsch: "
+            f"{german_blocks} Blöcke / "
+            f"{german_characters} Zeichen"
+        )
+
     def render_history(
         self
     ) -> None:
@@ -714,6 +948,27 @@ class LiveTranslateWindow(QMainWindow):
         )
 
         self.render_history()
+
+    def show_reference_result(
+        self,
+        result: dict
+    ) -> None:
+        self.metrics_label.setText(
+            "Offline-Referenz: "
+            f"{result['offline_words']} Wörter / "
+            f"{result['offline_characters']} Zeichen  ·  "
+            "Live-Streaming: "
+            f"{result['live_words']} Wörter / "
+            f"{result['live_characters']} Zeichen  ·  "
+            "Abdeckung: "
+            f"{result['word_coverage_percent']}% Wörter / "
+            f"{result['character_coverage_percent']}% Zeichen"
+        )
+
+        self.status_label.setText(
+            "Referenzbericht gespeichert: "
+            f"{result['report_path']}"
+        )
 
     def set_status(
         self,
@@ -806,11 +1061,30 @@ class LiveTranslateWindow(QMainWindow):
             not running
         )
 
+        self.reference_checkbox.setEnabled(
+            not running
+        )
+
     def start_translation(
         self
     ) -> None:
         if self.running:
             return
+
+        self.history.clear()
+        self.source_history.clear()
+
+        self.render_history()
+        self.render_source_history()
+
+        self.update_metrics(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+        )
 
         self.update_controls(
             True
@@ -821,9 +1095,16 @@ class LiveTranslateWindow(QMainWindow):
             or "auto"
         )
 
+        reference_capture = (
+            self.reference_checkbox.isChecked()
+        )
+
         self.worker_thread = threading.Thread(
             target=self.start_worker,
-            args=(selected_language,),
+            args=(
+                selected_language,
+                reference_capture
+            ),
             name="LiveTranslateStarter",
             daemon=True
         )
@@ -832,7 +1113,8 @@ class LiveTranslateWindow(QMainWindow):
 
     def start_worker(
         self,
-        selected_language: str
+        selected_language: str,
+        reference_capture: bool
     ) -> None:
         try:
             self.bridge.server_state_ready.emit(
@@ -851,7 +1133,8 @@ class LiveTranslateWindow(QMainWindow):
 
             self.stream = WLKStream(
                 self.bridge,
-                source_language=selected_language
+                source_language=selected_language,
+                reference_capture=reference_capture
             )
 
             self.stream.audio_level_callback = (
@@ -911,12 +1194,57 @@ class LiveTranslateWindow(QMainWindow):
     def stop_worker(
         self
     ) -> None:
+        reference_wav_path = ""
+        live_original_text = ""
+        reference_language = "auto"
+        run_reference = False
+
         try:
             if self.stream is not None:
+                run_reference = (
+                    self.stream.reference_capture
+                )
+
+                reference_wav_path = (
+                    self.stream
+                    .get_reference_wav_path()
+                )
+
+                live_original_text = (
+                    self.stream
+                    .get_live_original_text()
+                )
+
+                reference_language = (
+                    self.stream.source_language
+                )
+
                 self.stream.stop()
                 self.stream = None
 
             self.server.stop()
+
+            if (
+                run_reference
+                and reference_wav_path
+            ):
+                result = run_reference_benchmark(
+                    reference_wav_path,
+                    live_original_text,
+                    reference_language,
+                    progress_callback=(
+                        self.bridge.status_ready.emit
+                    )
+                )
+
+                self.bridge.reference_ready.emit(
+                    result
+                )
+
+        except Exception as error:
+            self.bridge.error_ready.emit(
+                f"Referenzvergleich: {error}"
+            )
 
         finally:
             self.bridge.server_state_ready.emit(

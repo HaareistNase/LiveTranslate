@@ -4,6 +4,9 @@ import queue
 import threading
 import time
 import warnings
+import wave
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import requests
@@ -75,6 +78,24 @@ class WLKStream:
         self.audio_state_callback = None
         self.gpu_state_callback = None
         self.translator_state_callback = None
+
+        # Vollständigkeitsdiagnose
+        self.asr_update_count = 0
+        self.asr_character_count = 0
+        self.nllb_block_count = 0
+        self.nllb_character_count = 0
+        self.german_block_count = 0
+        self.german_character_count = 0
+
+    def emit_metrics(self) -> None:
+        self.bridge.metrics_ready.emit(
+            self.asr_update_count,
+            self.asr_character_count,
+            self.nllb_block_count,
+            self.nllb_character_count,
+            self.german_block_count,
+            self.german_character_count
+        )
 
     def check_server(self) -> None:
         response = requests.get(
@@ -169,6 +190,44 @@ class WLKStream:
             SAMPLE_RATE * CHUNK_SECONDS
         )
 
+        if self.reference_capture:
+            reference_dir = Path(
+                "logs/reference"
+            )
+
+            reference_dir.mkdir(
+                parents=True,
+                exist_ok=True
+            )
+
+            timestamp = datetime.now().strftime(
+                "%Y%m%d_%H%M%S"
+            )
+
+            self.reference_wav_path = str(
+                reference_dir
+                / f"reference_audio_{timestamp}.wav"
+            )
+
+            self.reference_wave_file = (
+                wave.open(
+                    self.reference_wav_path,
+                    "wb"
+                )
+            )
+
+            self.reference_wave_file.setnchannels(
+                1
+            )
+
+            self.reference_wave_file.setsampwidth(
+                2
+            )
+
+            self.reference_wave_file.setframerate(
+                SAMPLE_RATE
+            )
+
         last_status_time = 0.0
         last_active_time = time.monotonic()
         active_audio_seen = False
@@ -224,11 +283,23 @@ class WLKStream:
 
                             last_status_time = now
 
+                        pcm_bytes = (
+                            self.float32_to_pcm16(
+                                audio
+                            )
+                        )
+
+                        if (
+                            self.reference_wave_file
+                            is not None
+                        ):
+                            self.reference_wave_file.writeframes(
+                                pcm_bytes
+                            )
+
                         try:
                             self.audio_queue.put(
-                                self.float32_to_pcm16(
-                                    audio
-                                ),
+                                pcm_bytes,
                                 timeout=1.0
                             )
 
@@ -244,6 +315,15 @@ class WLKStream:
                 )
 
                 self.stop_event.set()
+
+        finally:
+            if self.reference_wave_file is not None:
+                try:
+                    self.reference_wave_file.close()
+                except Exception:
+                    pass
+
+                self.reference_wave_file = None
 
     def collect_translation_batch(
         self,
@@ -392,9 +472,16 @@ class WLKStream:
                         german
                     )
 
+                    self.german_block_count += 1
+                    self.german_character_count += len(
+                        german
+                    )
+
                     self.bridge.subtitle_ready.emit(
                         german
                     )
+
+                    self.emit_metrics()
 
                     name = LANGUAGE_NAMES.get(
                         language,
@@ -447,6 +534,17 @@ class WLKStream:
                     ),
                     timeout=1.0
                 )
+
+                self.nllb_block_count += 1
+                self.nllb_character_count += len(
+                    segment
+                )
+
+                self.bridge.source_ready.emit(
+                    segment
+                )
+
+                self.emit_metrics()
 
             except queue.Full:
                 self.bridge.error_ready.emit(
@@ -602,6 +700,17 @@ class WLKStream:
                     )
                     continue
 
+                self.asr_update_count += 1
+                self.asr_character_count += len(
+                    new_text
+                )
+
+                self.live_original_parts.append(
+                    new_text
+                )
+
+                self.emit_metrics()
+
                 self.enqueue_segments(
                     self.context_buffer.add_confirmed(
                         new_text
@@ -658,6 +767,18 @@ class WLKStream:
                 self.bridge.error_ready.emit(
                     f"WhisperLiveKit: {error}"
                 )
+
+    def get_live_original_text(
+        self
+    ) -> str:
+        return " ".join(
+            self.live_original_parts
+        ).strip()
+
+    def get_reference_wav_path(
+        self
+    ) -> str:
+        return self.reference_wav_path
 
     def start(self) -> None:
         self.check_server()

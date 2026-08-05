@@ -1,33 +1,35 @@
-# LiveTranslate v18.1-dev – Patch
+LiveTranslate v18.3-dev – Offline-Referenzvergleich
 
-Dieser Patch enthält nur vier Dateien und überschreibt ausdrücklich
-keine `.gitignore`.
+Enthalten:
+- version.py
+- config.py
+- main_gui.py
+- wlk_stream.py
+- reference_benchmark.py
 
-## Behoben
+Keine .gitignore, keine Modelle, keine virtuellen Umgebungen.
 
-Der ContextBuffer konnte bei durchgehender Sprache unbegrenzt offen
-bleiben. Die bisherige Zeichengrenze zählte nur bereits abgeschlossene
-Sätze, nicht aber den noch unpunktierten Resttext.
+Test mit dem Referenzvideo:
+https://www.youtube.com/watch?v=JeRb7Ud1kSU
 
-Dadurch konnte nach einigen sichtbaren Blöcken scheinbar keine weitere
-Übersetzung mehr erscheinen.
+Ablauf:
+1. GUI starten.
+2. Quellsprache passend wählen oder Automatisch lassen.
+3. "Offline-Referenzvergleich" aktivieren.
+4. Start drücken.
+5. Einen klar abgegrenzten Abschnitt des Videos abspielen, z. B. 60 Sekunden.
+6. Video pausieren.
+7. Stopp drücken.
+8. Die App transkribiert exakt die aufgezeichnete Audiospur noch einmal
+   offline mit faster-whisper large-v3.
+9. Danach zeigt die GUI:
+   - Wort- und Zeichenzahl der Live-Erkennung
+   - Wort- und Zeichenzahl der Offline-Referenz
+   - prozentuale Abdeckung
 
-Jetzt wird ein Block zusätzlich spätestens nach sechs Sekunden
-ausgegeben, auch wenn keine Pause und kein Satzzeichen vorkommen.
+Berichte liegen unter:
+logs\reference\
 
-## Versionsanzeige
-
-Die GUI zeigt nun:
-
-- Fenstertitel: `LiveTranslate v18.1-dev [develop]`
-- Überschrift: `LiveTranslate v18.1-dev`
-- Statuszeile beim Start: `v18.1-dev · develop · Bereit`
-
-## Enthaltene Dateien
-
-- `version.py`
-- `config.py`
-- `context_buffer.py`
-- `main_gui.py`
-
-Keine virtuellen Umgebungen, Modelle, ZIPs oder `.gitignore`.
+Wichtig:
+Die Offline-Auswertung startet erst nach Stopp und kann je nach Länge
+etwas dauern. Sie verwendet die RTX-GPU.
