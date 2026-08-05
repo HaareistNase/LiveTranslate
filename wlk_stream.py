@@ -33,8 +33,20 @@ from pipeline_logger import PipelineLogger
 
 
 class WLKStream:
-    def __init__(self, bridge, source_language='auto'):
+    def __init__(
+        self,
+        bridge,
+        source_language='auto',
+        reference_capture=False
+    ):
         self.bridge = bridge
+        self.source_language = source_language
+        self.reference_capture = reference_capture
+
+        self.reference_wav_path = ''
+        self.reference_wave_file = None
+        self.live_original_parts = []
+
         self.stop_event = threading.Event()
 
         self.audio_queue = queue.Queue(
@@ -58,7 +70,6 @@ class WLKStream:
         self.transcript_assembler = TranscriptAssembler(
             logger=self.pipeline_logger
         )
-        self.source_language = source_language
         self.current_language = (
             source_language
             if source_language != 'auto'
