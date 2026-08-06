@@ -7,6 +7,8 @@ from config import (
     CONTEXT_MAX_CHARACTERS,
     CONTEXT_MAX_SENTENCES,
     CONTEXT_MAX_WAIT_SECONDS,
+    CONTEXT_MIN_SENTENCES,
+    CONTEXT_TARGET_CHARACTERS,
 )
 from hallucination_filter import (
     is_known_hallucination,
@@ -22,13 +24,17 @@ _SENTENCE_END = re.compile(
 
 class ContextBuffer:
     """
-    Sammelt neue Whisper-Textteile zu übersetzbaren Blöcken.
+    Baut aus bestätigten ASR-Teilen lesbare Übersetzungsblöcke.
 
+    Kurze vollständige Sätze werden bevorzugt zusammengefasst.
     Ein Block wird ausgegeben, wenn:
-    - genügend vollständige Sätze vorliegen,
-    - die gesamte Textmenge die Zeichengrenze erreicht,
-    - eine Sprechpause erkannt wurde,
-    - oder der Block trotz durchgehender Sprache zu lange offen ist.
+
+    - die Zielgröße erreicht ist,
+    - die harte Satz- oder Zeichengrenze erreicht ist,
+    - eine Sprechpause vorliegt,
+    - oder der Block zu lange offen ist.
+
+    Ein unvollständiger Satz bleibt nach Möglichkeit im Puffer.
     """
 
     def __init__(
@@ -53,7 +59,9 @@ class ContextBuffer:
                 value
             )
 
-    def _extract_sentences(self) -> None:
+    def _extract_sentences(
+        self
+    ) -> None:
         text = normalize_text(
             self.partial
         )
@@ -66,6 +74,7 @@ class ContextBuffer:
         )
 
         if len(parts) == 1:
+            self.partial = text
             return
 
         for part in parts[:-1]:
@@ -78,107 +87,146 @@ class ContextBuffer:
 
         self.partial = parts[-1].strip()
 
-    def _total_characters(self) -> int:
-        sentence_chars = sum(
-            len(sentence)
-            for sentence in self.sentences
+    @staticmethod
+    def _joined_length(
+        values: list[str]
+    ) -> int:
+        if not values:
+            return 0
+
+        return (
+            sum(
+                len(value)
+                for value in values
+            )
+            + len(values)
+            - 1
         )
 
-        separators = max(
-            0,
-            len(self.sentences) - 1
+    def _sentence_characters(
+        self
+    ) -> int:
+        return self._joined_length(
+            list(self.sentences)
+        )
+
+    def _total_characters(
+        self
+    ) -> int:
+        values = list(
+            self.sentences
         )
 
         if self.partial:
-            separators += (
-                1
-                if self.sentences
-                else 0
+            values.append(
+                self.partial
             )
 
-        return (
-            sentence_chars
-            + len(self.partial)
-            + separators
+        return self._joined_length(
+            values
         )
 
-    def _build_one_block(self) -> str:
+    def _build_sentence_block(
+        self,
+        force: bool
+    ) -> str:
+        """
+        Nimmt vollständige Sätze bis zur Ziel- bzw. Maximalgröße.
+
+        Ohne force wird erst ausgegeben, wenn mindestens die Zielgröße
+        oder eine harte Grenze erreicht ist.
+        """
+        if not self.sentences:
+            return ""
+
+        available = list(
+            self.sentences
+        )
+
         selected = []
-        length = 0
 
-        while self.sentences:
-            next_sentence = (
-                self.sentences[0]
-            )
-
-            projected = (
-                length
-                + len(next_sentence)
-                + (1 if selected else 0)
+        for sentence in available:
+            projected = self._joined_length(
+                selected + [sentence]
             )
 
             if (
                 selected
-                and (
-                    len(selected)
-                    >= CONTEXT_MAX_SENTENCES
-                    or projected
-                    > CONTEXT_MAX_CHARACTERS
-                )
+                and projected
+                > CONTEXT_MAX_CHARACTERS
             ):
                 break
 
             selected.append(
-                self.sentences.popleft()
+                sentence
             )
-
-            length = projected
 
             if (
                 len(selected)
                 >= CONTEXT_MAX_SENTENCES
-                or length
-                >= CONTEXT_MAX_CHARACTERS
+                or projected
+                >= CONTEXT_TARGET_CHARACTERS
             ):
                 break
 
-        # Bei durchgehender Sprache kann lange kein Satzzeichen kommen.
-        # Dann wird auch der unvollständige Rest als Block ausgegeben.
+        selected_length = self._joined_length(
+            selected
+        )
+
+        hard_limit_reached = (
+            len(selected)
+            >= CONTEXT_MAX_SENTENCES
+            or selected_length
+            >= CONTEXT_MAX_CHARACTERS
+        )
+
+        target_reached = (
+            selected_length
+            >= CONTEXT_TARGET_CHARACTERS
+            and len(selected)
+            >= CONTEXT_MIN_SENTENCES
+        )
+
         if (
-            not selected
-            and self.partial
+            not force
+            and not hard_limit_reached
+            and not target_reached
         ):
-            selected.append(
-                self.partial
-            )
+            return ""
 
-            self.partial = ""
+        for _ in range(
+            len(selected)
+        ):
+            self.sentences.popleft()
 
-        block = " ".join(
+        return " ".join(
             selected
         ).strip()
 
-        return block
-
-    def _flush_available(
+    def _flush(
         self,
-        force_all: bool
+        force: bool,
+        include_partial: bool
     ) -> list[str]:
         blocks = []
 
         while self.sentences:
-            block = self._build_one_block()
+            block = self._build_sentence_block(
+                force=force
+            )
 
-            if block:
-                blocks.append(
-                    block
-                )
+            if not block:
+                break
 
-            if not force_all:
+            blocks.append(
+                block
+            )
+
+            if not force:
                 break
 
         if (
-            force_all
+            include_partial
             and self.partial
         ):
             partial = self.partial.strip()
@@ -237,8 +285,16 @@ class ContextBuffer:
         self._extract_sentences()
 
         self._log(
-            "CONTEXT_PARTIAL",
-            self.partial
+            "CONTEXT_STATE",
+            {
+                "sentences": list(
+                    self.sentences
+                ),
+                "partial": self.partial,
+                "characters": (
+                    self._total_characters()
+                ),
+            }
         )
 
         block_age = (
@@ -247,20 +303,45 @@ class ContextBuffer:
             else 0.0
         )
 
-        must_flush = (
+        hard_limit_reached = (
             len(self.sentences)
             >= CONTEXT_MAX_SENTENCES
-            or self._total_characters()
+            or self._sentence_characters()
             >= CONTEXT_MAX_CHARACTERS
-            or block_age
+        )
+
+        target_reached = (
+            len(self.sentences)
+            >= CONTEXT_MIN_SENTENCES
+            and self._sentence_characters()
+            >= CONTEXT_TARGET_CHARACTERS
+        )
+
+        waited_too_long = (
+            block_age
             >= CONTEXT_MAX_WAIT_SECONDS
         )
 
-        if not must_flush:
+        if (
+            not hard_limit_reached
+            and not target_reached
+            and not waited_too_long
+        ):
             return []
 
-        blocks = self._flush_available(
-            force_all=True
+        # Bei Zeitablauf vollständige Sätze bevorzugen. Nur wenn noch
+        # überhaupt kein Satzende vorliegt, muss der Teiltext raus.
+        include_partial = (
+            waited_too_long
+            and not self.sentences
+        )
+
+        blocks = self._flush(
+            force=(
+                hard_limit_reached
+                or waited_too_long
+            ),
+            include_partial=include_partial,
         )
 
         self._log(
@@ -301,8 +382,14 @@ class ContextBuffer:
         ):
             return []
 
-        blocks = self._flush_available(
-            force_all=True
+        # Bei einer Pause vollständige Sätze sofort ausgeben. Der noch
+        # laufende Satz bleibt erhalten. Nur wenn es gar kein Satzende
+        # gibt, wird der Teiltext freigegeben.
+        blocks = self._flush(
+            force=True,
+            include_partial=(
+                not self.sentences
+            ),
         )
 
         self._log(
@@ -315,8 +402,9 @@ class ContextBuffer:
     def flush_all(
         self
     ) -> list[str]:
-        blocks = self._flush_available(
-            force_all=True
+        blocks = self._flush(
+            force=True,
+            include_partial=True,
         )
 
         self._log(

@@ -111,8 +111,10 @@ SHOW_SERVER_LOG_DEFAULT = False
 
 
 # Konservative Kontextübersetzung
-CONTEXT_MAX_SENTENCES = 3
+CONTEXT_MAX_SENTENCES = 6
 CONTEXT_MAX_CHARACTERS = 420
+CONTEXT_TARGET_CHARACTERS = 220
+CONTEXT_MIN_SENTENCES = 2
 CONTEXT_FLUSH_SECONDS = 2.5
 
 
@@ -132,7 +134,7 @@ PIPELINE_DEBUG_GUI_TEXT_LIMIT = 320
 
 # Ein Kontextblock wird auch bei durchgehender Sprache spätestens
 # nach dieser Zeit ausgegeben.
-CONTEXT_MAX_WAIT_SECONDS = 6.0
+CONTEXT_MAX_WAIT_SECONDS = 4.0
 
 
 # Offline-Referenzvergleich

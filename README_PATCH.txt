@@ -1,35 +1,41 @@
-LiveTranslate v18.16-hallucination-guard
+LiveTranslate v18.17-dynamic-segments
 
-Gezielter Halluzinationsschutz für den beobachteten Fehler.
+Dynamische, lesbarere Übersetzungsblöcke.
 
 Geändert:
 
-- hallucination_filter.py
 - context_buffer.py
-- wlk_stream.py
+- config.py
 - version.py
-- tests/test_hallucination_guard.py
+- tests/test_dynamic_segments.py
 
-Neu:
+Neue Standardwerte:
 
-1. Russische Phrase "Продолжение следует" wird auch in verstümmelten
-   und mehrfach wiederholten Schreibweisen erkannt.
+- Zielgröße: 220 Zeichen
+- mindestens 2 vollständige Sätze für die Zielausgabe
+- maximal 6 Sätze
+- maximal 420 Zeichen
+- maximale Wartezeit: 4 Sekunden
+- Pausenabschluss: 2,5 Sekunden
 
-2. Die Phrase wird aus gemischten Blöcken entfernt, ohne echten Text
-   davor und danach zu verlieren.
+Verhalten:
 
-3. Eine NLLB-Ausgabe wird nur verworfen, wenn sie gleichzeitig:
-   - mindestens dreimal so viele Wörter wie der Quellblock enthält,
-   - mindestens 18 Wörter lang ist,
-   - und stark wiederholte Wörter oder Wortgruppen enthält.
+- Kurze Sätze werden bevorzugt zusammengefasst.
+- Ein unvollständiger Satz bleibt nach Möglichkeit im Puffer.
+- Mitten im Satz wird nur ausgegeben, wenn kein Satzende kommt und der
+  Text sonst dauerhaft hängen würde.
+- Beim Stoppen wird der gesamte Rest ausgegeben.
 
 Unverändert:
 
-- GUI-Historie bleibt bei 50
-- Serverparameter bleiben unverändert
-- Tracker und Segmentierung bleiben unverändert
-- normale längere Übersetzungen werden nicht gefiltert
+- Serverparameter aus v18.14-stable
+- GUI-Historie mit 50 Einträgen
+- Halluzinationsschutz aus v18.16
+- Tracker
+- Audio
+- WhisperLiveKit
+- NLLB
 
 Fenstertitel:
 
-LiveTranslate v18.16-hallucination-guard [develop]
+LiveTranslate v18.17-dynamic-segments [develop]

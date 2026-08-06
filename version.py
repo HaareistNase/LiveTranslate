@@ -1,5 +1,5 @@
 APP_NAME = "LiveTranslate"
-VERSION = "18.16-hallucination-guard"
+VERSION = "18.17-dynamic-segments"
 BRANCH = "develop"
 BUILD_DATE = "2026-08-05"
 
