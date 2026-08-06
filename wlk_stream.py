@@ -45,6 +45,7 @@ from transcript_assembler import TranscriptAssembler
 from pipeline_logger import PipelineLogger
 from pipeline_probe import PipelineProbe
 from hallucination_filter import is_translation_explosion
+from subtitle_postprocessor import SubtitlePostprocessor
 from raw_websocket_probe import RawWebSocketProbe
 
 
@@ -80,6 +81,10 @@ class WLKStream:
             gui_callback=(
                 self.bridge.server_log_ready.emit
             )
+        )
+
+        self.subtitle_postprocessor = (
+            SubtitlePostprocessor()
         )
 
         self.pipeline_probe = PipelineProbe()
@@ -589,6 +594,60 @@ class WLKStream:
 
         return batch
 
+    def emit_german_subtitle(
+        self,
+        german: str,
+        language: str
+    ) -> None:
+        self.pipeline_logger.log(
+            "GUI_SUBTITLE",
+            german
+        )
+
+        self.pipeline_probe.gui_output(
+            german
+        )
+
+        self.german_block_count += 1
+        self.german_character_count += len(
+            german
+        )
+
+        self.bridge.subtitle_ready.emit(
+            german
+        )
+
+        self.emit_metrics()
+
+        name = LANGUAGE_NAMES.get(
+            language,
+            language
+        )
+
+        self.bridge.status_ready.emit(
+            f"Bereit · Sprache: {name}"
+        )
+
+    def flush_subtitle_postprocessor(
+        self,
+        language: str | None = None
+    ) -> None:
+        fallback_language = (
+            language
+            or self.current_language
+            or self.source_language
+            or "auto"
+        )
+
+        for german in (
+            self.subtitle_postprocessor
+            .flush()
+        ):
+            self.emit_german_subtitle(
+                german,
+                fallback_language
+            )
+
     def translation_worker(self) -> None:
         try:
             if self.gpu_state_callback is not None:
@@ -643,6 +702,8 @@ class WLKStream:
                 continue
 
             if first_item is None:
+                self.flush_subtitle_postprocessor()
+
                 self.translation_queue.task_done()
                 break
 
@@ -719,34 +780,26 @@ class WLKStream:
 
                         continue
 
-                    self.pipeline_logger.log(
-                        "GUI_SUBTITLE",
-                        german
+                    processed_outputs = (
+                        self.subtitle_postprocessor
+                        .process(german)
                     )
 
-                    self.pipeline_probe.gui_output(
-                        german
-                    )
+                    if not processed_outputs:
+                        self.pipeline_logger.log(
+                            "SUBTITLE_FRAGMENT_HELD",
+                            german
+                        )
 
-                    self.german_block_count += 1
-                    self.german_character_count += len(
-                        german
-                    )
+                        continue
 
-                    self.bridge.subtitle_ready.emit(
-                        german
-                    )
-
-                    self.emit_metrics()
-
-                    name = LANGUAGE_NAMES.get(
-                        language,
-                        language
-                    )
-
-                    self.bridge.status_ready.emit(
-                        f"Bereit · Sprache: {name}"
-                    )
+                    for processed_german in (
+                        processed_outputs
+                    ):
+                        self.emit_german_subtitle(
+                            processed_german,
+                            language
+                        )
 
             except Exception as error:
                 self.bridge.error_ready.emit(

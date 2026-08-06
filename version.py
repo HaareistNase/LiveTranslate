@@ -1,5 +1,5 @@
 APP_NAME = "LiveTranslate"
-VERSION = "18.17-dynamic-segments"
+VERSION = "18.18-subtitle-postprocess"
 BRANCH = "develop"
 BUILD_DATE = "2026-08-05"
 

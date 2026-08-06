@@ -1,41 +1,51 @@
-LiveTranslate v18.17-dynamic-segments
+LiveTranslate v18.18-subtitle-postprocess
 
-Dynamische, lesbarere Übersetzungsblöcke.
+Optionale, vorsichtige Nachbearbeitung zwischen NLLB und GUI.
 
 Geändert:
 
-- context_buffer.py
-- config.py
+- wlk_stream.py
 - version.py
-- tests/test_dynamic_segments.py
 
-Neue Standardwerte:
+Neu:
 
-- Zielgröße: 220 Zeichen
-- mindestens 2 vollständige Sätze für die Zielausgabe
-- maximal 6 Sätze
-- maximal 420 Zeichen
-- maximale Wartezeit: 4 Sekunden
-- Pausenabschluss: 2,5 Sekunden
+- subtitle_postprocessor.py
+- tests/test_subtitle_postprocessor.py
 
-Verhalten:
+Funktionen:
 
-- Kurze Sätze werden bevorzugt zusammengefasst.
-- Ein unvollständiger Satz bleibt nach Möglichkeit im Puffer.
-- Mitten im Satz wird nur ausgegeben, wenn kein Satzende kommt und der
-  Text sonst dauerhaft hängen würde.
-- Beim Stoppen wird der gesamte Rest ausgegeben.
+- Leerzeichen vor und nach Satzzeichen bereinigen
+- direkt benachbarte identische Sätze entfernen
+- extrem kurze unvollständige Fragmente mit höchstens zwei Wörtern
+  beziehungsweise 18 Zeichen zurückhalten
+- zurückgehaltene Fragmente mit dem nächsten deutschen Block verbinden
+- beim Stoppen verbleibende Fragmente trotzdem anzeigen
 
-Unverändert:
+Beispiel:
 
-- Serverparameter aus v18.14-stable
-- GUI-Historie mit 50 Einträgen
-- Halluzinationsschutz aus v18.16
+"Wälder"
++
+"und verschneite Wege sehen wunderschön aus."
+
+wird zu:
+
+"Wälder und verschneite Wege sehen wunderschön aus."
+
+Unverändert bleiben:
+
+- WhisperLiveKit und Serverparameter
 - Tracker
-- Audio
-- WhisperLiveKit
+- ContextBuffer und dynamische Segmentbildung aus v18.17
 - NLLB
+- GUI und Historie
+- Halluzinationsschutz
+
+Hinweis:
+
+Ein Fragment am absoluten Ende der Aufnahme kann nicht sinnvoll mit
+einem Folgesatz verbunden werden. Es wird beim Stoppen deshalb
+unverändert ausgegeben, damit kein Inhalt verloren geht.
 
 Fenstertitel:
 
-LiveTranslate v18.17-dynamic-segments [develop]
+LiveTranslate v18.18-subtitle-postprocess [develop]
