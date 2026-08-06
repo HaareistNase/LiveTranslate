@@ -44,6 +44,7 @@ from context_buffer import ContextBuffer
 from transcript_assembler import TranscriptAssembler
 from pipeline_logger import PipelineLogger
 from pipeline_probe import PipelineProbe
+from hallucination_filter import is_translation_explosion
 from raw_websocket_probe import RawWebSocketProbe
 
 
@@ -694,6 +695,28 @@ class WLKStream:
                     translations
                 ):
                     if not german:
+                        continue
+
+                    if is_translation_explosion(
+                        source_text,
+                        german
+                    ):
+                        self.pipeline_logger.log(
+                            "NLLB_OUTPUT_REJECTED",
+                            {
+                                "source_text": source_text,
+                                "translated_text": german,
+                                "reason": (
+                                    "extreme repeated output"
+                                ),
+                            }
+                        )
+
+                        self.bridge.status_ready.emit(
+                            "Wiederholte "
+                            "Übersetzung verworfen"
+                        )
+
                         continue
 
                     self.pipeline_logger.log(

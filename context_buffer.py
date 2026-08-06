@@ -11,6 +11,7 @@ from config import (
 from hallucination_filter import (
     is_known_hallucination,
     normalize_text,
+    strip_known_hallucinations,
 )
 
 
@@ -201,6 +202,10 @@ class ContextBuffer:
         self,
         confirmed_text: str
     ) -> list[str]:
+        confirmed_text = strip_known_hallucinations(
+            confirmed_text
+        )
+
         confirmed_text = normalize_text(
             confirmed_text
         )

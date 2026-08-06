@@ -1,52 +1,35 @@
-LiveTranslate v18.14-stable – Bewährte Serverparameter
+LiveTranslate v18.16-hallucination-guard
 
-Dieser Patch übernimmt den erfolgreichen Referenzlauf als integrierten
-Standard.
-
-Serverkonfiguration:
-
-- Backend: faster-whisper
-- Policy: simulstreaming
-- Modell: large-v3
-- Sprache: Auswahl aus der GUI; bei Automatisch = auto
-- audio-max-len: 45 Sekunden
-- buffer_trimming: segment
-- buffer_trimming_sec: 15 Sekunden
-- max-context-tokens: 0
-- PCM-Eingang
-- Log-Level INFO
+Gezielter Halluzinationsschutz für den beobachteten Fehler.
 
 Geändert:
 
-- config.py
-- server_manager.py
-- version.py
-
-Zusätzlich:
-
-- stop_external_wlk.bat
-
-Unverändert bleiben:
-
-- main_gui.py
-- wlk_stream.py
-- transcript_assembler.py
+- hallucination_filter.py
 - context_buffer.py
-- NLLB
-- Diagnose-Probes
+- wlk_stream.py
+- version.py
+- tests/test_hallucination_guard.py
 
-Wichtig vor dem ersten Test:
+Neu:
 
-Ein manuell gestarteter WLK-Server auf Port 8000 verwendet weiterhin
-seine alten Startparameter. Deshalb alle WLK-Fenster schließen oder
-stop_external_wlk.bat ausführen.
+1. Russische Phrase "Продолжение следует" wird auch in verstümmelten
+   und mehrfach wiederholten Schreibweisen erkannt.
 
-Danach nur noch die GUI starten. Sie startet WhisperLiveKit selbst mit
-der neuen Standardkonfiguration.
+2. Die Phrase wird aus gemischten Blöcken entfernt, ohne echten Text
+   davor und danach zu verlieren.
 
-Für das russische Referenzvideo in der GUI ausdrücklich "Russisch"
-wählen. Das war Bestandteil des erfolgreichen Laufs.
+3. Eine NLLB-Ausgabe wird nur verworfen, wenn sie gleichzeitig:
+   - mindestens dreimal so viele Wörter wie der Quellblock enthält,
+   - mindestens 18 Wörter lang ist,
+   - und stark wiederholte Wörter oder Wortgruppen enthält.
+
+Unverändert:
+
+- GUI-Historie bleibt bei 50
+- Serverparameter bleiben unverändert
+- Tracker und Segmentierung bleiben unverändert
+- normale längere Übersetzungen werden nicht gefiltert
 
 Fenstertitel:
 
-LiveTranslate v18.14-stable [develop]
+LiveTranslate v18.16-hallucination-guard [develop]
