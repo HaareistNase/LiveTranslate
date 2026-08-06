@@ -11,3 +11,4 @@ dist/
 *.log
 .gitattributes_alt
 .gitignore_alt
+logs/

@@ -6,10 +6,12 @@ from config import (
     CONTEXT_FLUSH_SECONDS,
     CONTEXT_MAX_CHARACTERS,
     CONTEXT_MAX_SENTENCES,
+    CONTEXT_MAX_WAIT_SECONDS,
 )
 from hallucination_filter import (
     is_known_hallucination,
     normalize_text,
+    strip_known_hallucinations,
 )
 
 
@@ -18,70 +20,50 @@ _SENTENCE_END = re.compile(
 )
 
 
-def get_new_suffix(
-    previous: str,
-    current: str
-) -> str:
-    previous = normalize_text(previous)
-    current = normalize_text(current)
-
-    if not current:
-        return ""
-
-    if not previous:
-        return current
-
-    if current == previous:
-        return ""
-
-    if current.startswith(previous):
-        return current[len(previous):].strip()
-
-    previous_words = previous.split()
-    current_words = current.split()
-
-    maximum_overlap = min(
-        len(previous_words),
-        len(current_words)
-    )
-
-    for overlap in range(
-        maximum_overlap,
-        0,
-        -1
-    ):
-        if (
-            previous_words[-overlap:]
-            == current_words[:overlap]
-        ):
-            return " ".join(
-                current_words[overlap:]
-            ).strip()
-
-    return current
-
-
 class ContextBuffer:
     """
-    Sammelt bestätigten Whisper-Text zu kleinen Kontextblöcken.
+    Sammelt neue Whisper-Textteile zu übersetzbaren Blöcken.
 
-    Es gibt keine laufenden Vorschauen und keine Revisionen.
-    Dadurch bleibt die aus v14 bekannte, stabile GUI-Logik erhalten.
+    Ein Block wird ausgegeben, wenn:
+    - genügend vollständige Sätze vorliegen,
+    - die gesamte Textmenge die Zeichengrenze erreicht,
+    - eine Sprechpause erkannt wurde,
+    - oder der Block trotz durchgehender Sprache zu lange offen ist.
     """
 
-    def __init__(self):
-        self.last_confirmed = ""
+    def __init__(
+        self,
+        logger=None
+    ):
+        self.logger = logger
         self.partial = ""
         self.sentences = deque()
+
         self.last_update = None
+        self.block_started = None
+
+    def _log(
+        self,
+        stage: str,
+        value
+    ) -> None:
+        if self.logger is not None:
+            self.logger.log(
+                stage,
+                value
+            )
 
     def _extract_sentences(self) -> None:
-        text = normalize_text(self.partial)
+        text = normalize_text(
+            self.partial
+        )
 
         if not text:
             return
 
-        parts = _SENTENCE_END.split(text)
+        parts = _SENTENCE_END.split(
+            text
+        )
 
         if len(parts) == 1:
             return
@@ -90,59 +72,129 @@ class ContextBuffer:
             part = part.strip()
 
             if part:
-                self.sentences.append(part)
+                self.sentences.append(
+                    part
+                )
 
         self.partial = parts[-1].strip()
 
-    def _build_blocks(
+    def _total_characters(self) -> int:
+        sentence_chars = sum(
+            len(sentence)
+            for sentence in self.sentences
+        )
+
+        separators = max(
+            0,
+            len(self.sentences) - 1
+        )
+
+        if self.partial:
+            separators += (
+                1
+                if self.sentences
+                else 0
+            )
+
+        return (
+            sentence_chars
+            + len(self.partial)
+            + separators
+        )
+
+    def _build_one_block(self) -> str:
+        selected = []
+        length = 0
+
+        while self.sentences:
+            next_sentence = (
+                self.sentences[0]
+            )
+
+            projected = (
+                length
+                + len(next_sentence)
+                + (1 if selected else 0)
+            )
+
+            if (
+                selected
+                and (
+                    len(selected)
+                    >= CONTEXT_MAX_SENTENCES
+                    or projected
+                    > CONTEXT_MAX_CHARACTERS
+                )
+            ):
+                break
+
+            selected.append(
+                self.sentences.popleft()
+            )
+
+            length = projected
+
+            if (
+                len(selected)
+                >= CONTEXT_MAX_SENTENCES
+                or length
+                >= CONTEXT_MAX_CHARACTERS
+            ):
+                break
+
+        # Bei durchgehender Sprache kann lange kein Satzzeichen kommen.
+        # Dann wird auch der unvollständige Rest als Block ausgegeben.
+        if (
+            not selected
+            and self.partial
+        ):
+            selected.append(
+                self.partial
+            )
+
+            self.partial = ""
+
+        block = " ".join(
+            selected
+        ).strip()
+
+        return block
+
+    def _flush_available(
         self,
-        force: bool
+        force_all: bool
     ) -> list[str]:
         blocks = []
 
         while self.sentences:
-            selected = []
-            length = 0
-
-            while self.sentences:
-                next_sentence = self.sentences[0]
-                projected = (
-                    length
-                    + len(next_sentence)
-                    + (1 if selected else 0)
-                )
-
-                if (
-                    selected
-                    and (
-                        len(selected)
-                        >= CONTEXT_MAX_SENTENCES
-                        or projected
-                        > CONTEXT_MAX_CHARACTERS
-                    )
-                ):
-                    break
-
-                selected.append(
-                    self.sentences.popleft()
-                )
-                length = projected
-
-                if (
-                    len(selected)
-                    >= CONTEXT_MAX_SENTENCES
-                    or length
-                    >= CONTEXT_MAX_CHARACTERS
-                ):
-                    break
-
-            block = " ".join(selected).strip()
+            block = self._build_one_block()
 
             if block:
-                blocks.append(block)
+                blocks.append(
+                    block
+                )
 
-            if not force:
+            if not force_all:
                 break
+
+        if (
+            force_all
+            and self.partial
+        ):
+            partial = self.partial.strip()
+            self.partial = ""
+
+            if partial:
+                blocks.append(
+                    partial
+                )
+
+        if (
+            not self.sentences
+            and not self.partial
+        ):
+            self.block_started = None
+            self.last_update = None
 
         return blocks
 
@@ -150,6 +202,10 @@ class ContextBuffer:
         self,
         confirmed_text: str
     ) -> list[str]:
+        confirmed_text = strip_known_hallucinations(
+            confirmed_text
+        )
+
         confirmed_text = normalize_text(
             confirmed_text
         )
@@ -162,76 +218,110 @@ class ContextBuffer:
         ):
             return []
 
-        new_text = get_new_suffix(
-            self.last_confirmed,
+        now = time.monotonic()
+
+        if self.block_started is None:
+            self.block_started = now
+
+        self.last_update = now
+
+        self._log(
+            "CONTEXT_INPUT",
             confirmed_text
         )
 
-        self.last_confirmed = confirmed_text
-
-        if not new_text:
-            return []
-
         self.partial = normalize_text(
-            f"{self.partial} {new_text}"
+            f"{self.partial} {confirmed_text}"
         )
-
-        self.last_update = time.monotonic()
 
         self._extract_sentences()
 
-        total_chars = sum(
-            len(sentence)
-            for sentence in self.sentences
+        self._log(
+            "CONTEXT_PARTIAL",
+            self.partial
         )
 
-        if (
+        block_age = (
+            now - self.block_started
+            if self.block_started is not None
+            else 0.0
+        )
+
+        must_flush = (
             len(self.sentences)
             >= CONTEXT_MAX_SENTENCES
-            or total_chars
+            or self._total_characters()
             >= CONTEXT_MAX_CHARACTERS
-        ):
-            return self._build_blocks(
-                force=False
-            )
+            or block_age
+            >= CONTEXT_MAX_WAIT_SECONDS
+        )
 
-        return []
+        if not must_flush:
+            return []
+
+        blocks = self._flush_available(
+            force_all=True
+        )
+
+        self._log(
+            "CONTEXT_BLOCKS",
+            blocks
+        )
+
+        return blocks
 
     def flush_if_old(
         self
     ) -> list[str]:
-        if self.last_update is None:
-            return []
-
         if (
-            time.monotonic() - self.last_update
-            < CONTEXT_FLUSH_SECONDS
+            self.last_update is None
+            or (
+                not self.sentences
+                and not self.partial
+            )
         ):
             return []
 
-        if self.partial:
-            self.sentences.append(
-                self.partial
-            )
-            self.partial = ""
+        now = time.monotonic()
 
-        self.last_update = None
-
-        return self._build_blocks(
-            force=True
+        silent_long_enough = (
+            now - self.last_update
+            >= CONTEXT_FLUSH_SECONDS
         )
+
+        open_too_long = (
+            self.block_started is not None
+            and now - self.block_started
+            >= CONTEXT_MAX_WAIT_SECONDS
+        )
+
+        if (
+            not silent_long_enough
+            and not open_too_long
+        ):
+            return []
+
+        blocks = self._flush_available(
+            force_all=True
+        )
+
+        self._log(
+            "CONTEXT_FLUSH",
+            blocks
+        )
+
+        return blocks
 
     def flush_all(
         self
     ) -> list[str]:
-        if self.partial:
-            self.sentences.append(
-                self.partial
-            )
-            self.partial = ""
-
-        self.last_update = None
-
-        return self._build_blocks(
-            force=True
+        blocks = self._flush_available(
+            force_all=True
         )
+
+        self._log(
+            "CONTEXT_FINAL_FLUSH",
+            blocks
+        )
+
+        return blocks
